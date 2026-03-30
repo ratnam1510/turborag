@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,33 @@ from .embeddings import SentenceTransformerEmbedder
 from .ingest import build_sidecar_index, load_dataset, open_sidecar_adapter
 
 
+LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
 @click.group()
-def cli() -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    default="INFO",
+    show_default=True,
+    envvar="TURBORAG_LOG_LEVEL",
+    help="Set the logging verbosity.",
+)
+@click.option(
+    "--log-format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Log output format.",
+)
+def cli(log_level: str, log_format: str) -> None:
     """TurboRAG command-line tools."""
+    level = getattr(logging, log_level.upper())
+    if log_format == "json":
+        fmt = '{"time":"%(asctime)s","name":"%(name)s","level":"%(levelname)s","msg":"%(message)s"}'
+    else:
+        fmt = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
+    logging.basicConfig(level=level, format=fmt, force=True)
 
 
 @cli.command("import-existing-index")
@@ -36,16 +61,21 @@ def import_existing_index(
     no_record_snapshot: bool,
 ) -> None:
     """Build a TurboRAG sidecar index from existing embeddings."""
+    click.echo(f"Loading dataset from {input_path}...")
     dataset = load_dataset(input_path, format=input_format)
-    result = build_sidecar_index(
-        dataset,
-        index_path,
-        bits=bits,
-        shard_size=shard_size,
-        seed=seed,
-        normalize=not no_normalize,
-        save_records=not no_record_snapshot,
-    )
+    click.echo(f"  → {len(dataset.ids)} vectors, dim={dataset.dim}")
+
+    with click.progressbar(length=100, label="Building index") as bar:
+        result = build_sidecar_index(
+            dataset,
+            index_path,
+            bits=bits,
+            shard_size=shard_size,
+            seed=seed,
+            normalize=not no_normalize,
+            save_records=not no_record_snapshot,
+        )
+        bar.update(100)
 
     payload = {
         "index_path": str(result.index_path),
@@ -113,6 +143,10 @@ def describe_index(index_path: Path) -> None:
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     payload["index_path"] = str(index_path)
     payload["records_snapshot"] = str(index_path / "records.jsonl") if (index_path / "records.jsonl").exists() else None
+
+    from ._cscore_wrapper import is_available as c_kernel_available
+    payload["c_kernel_available"] = c_kernel_available()
+
     click.echo(json.dumps(payload, indent=2))
 
 
@@ -178,8 +212,10 @@ def benchmark(
 @click.option("--index", "index_path", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--host", default="127.0.0.1", show_default=True, type=str)
 @click.option("--port", default=8080, show_default=True, type=int)
+@click.option("--workers", default=1, show_default=True, type=int, help="Number of uvicorn workers.")
 @click.option("--model", "model_name", type=str, default=None, help="Optional sentence-transformers model used for text query support.")
-def serve(index_path: Path, host: str, port: int, model_name: str | None) -> None:
+@click.option("--cors-origins", type=str, default="*", show_default=True, help="Comma-separated list of allowed CORS origins.")
+def serve(index_path: Path, host: str, port: int, workers: int, model_name: str | None, cors_origins: str) -> None:
     """Serve a TurboRAG sidecar index over HTTP."""
     try:
         import starlette  # noqa: F401
@@ -198,8 +234,9 @@ def serve(index_path: Path, host: str, port: int, model_name: str | None) -> Non
 
     from .service import create_app
 
-    app = create_app(index_path, query_embedder=query_embedder)
-    uvicorn.run(app, host=host, port=port)
+    origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
+    app = create_app(index_path, query_embedder=query_embedder, cors_origins=origins)
+    uvicorn.run(app, host=host, port=port, workers=workers)
 
 
 @cli.command("mcp")

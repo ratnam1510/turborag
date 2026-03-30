@@ -168,6 +168,84 @@ class GraphBuilder:
     def get_communities(self) -> dict[int, list[str]]:
         return dict(self._communities)
 
+    def save(self, path: str | Path) -> None:
+        """Persist the graph, communities, and summaries to disk.
+
+        Writes:
+        - ``graph.graphml`` — the entity-relationship graph
+        - ``communities.json`` — community membership
+        - ``summaries.json`` — community summaries (if generated)
+        """
+        nx = self._networkx()
+        save_dir = Path(path)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        nx.write_graphml(self.graph, str(save_dir / "graph.graphml"))
+
+        (save_dir / "communities.json").write_text(
+            json.dumps(self._communities, indent=2), encoding="utf-8"
+        )
+        if self._summaries:
+            (save_dir / "summaries.json").write_text(
+                json.dumps(self._summaries, indent=2), encoding="utf-8"
+            )
+
+        logger.info(
+            "Saved graph with %d nodes, %d edges, %d communities to %s",
+            self.graph.number_of_nodes(),
+            self.graph.number_of_edges(),
+            len(self._communities),
+            save_dir,
+        )
+
+    @classmethod
+    def load(cls, path: str | Path, llm_client: Any = None) -> "GraphBuilder":
+        """Load a previously saved graph from disk."""
+        nx = cls._networkx_static()
+        load_dir = Path(path)
+
+        builder = cls(llm_client=llm_client)
+        builder.graph = nx.read_graphml(str(load_dir / "graph.graphml"))
+
+        communities_path = load_dir / "communities.json"
+        if communities_path.exists():
+            raw = json.loads(communities_path.read_text(encoding="utf-8"))
+            builder._communities = {int(k): v for k, v in raw.items()}
+
+        summaries_path = load_dir / "summaries.json"
+        if summaries_path.exists():
+            raw = json.loads(summaries_path.read_text(encoding="utf-8"))
+            builder._summaries = {int(k): v for k, v in raw.items()}
+
+        logger.info(
+            "Loaded graph with %d nodes, %d edges from %s",
+            builder.graph.number_of_nodes(),
+            builder.graph.number_of_edges(),
+            load_dir,
+        )
+        return builder
+
+    def stats(self) -> dict[str, Any]:
+        """Return summary statistics about the graph."""
+        return {
+            "nodes": self.graph.number_of_nodes(),
+            "edges": self.graph.number_of_edges(),
+            "communities": len(self._communities),
+            "summaries_generated": len(self._summaries),
+            "entity_types": sorted(set(
+                str(self.graph.nodes[n].get("type", "unknown"))
+                for n in self.graph.nodes
+            )),
+        }
+
+    @staticmethod
+    def _networkx_static():
+        try:
+            import networkx as nx
+        except ImportError as exc:
+            raise ImportError("Graph support requires installing turborag[graph]") from exc
+        return nx
+
     def summarise_communities(self) -> dict[int, str]:
         summaries: dict[int, str] = {}
         for community_id, entities in self._communities.items():

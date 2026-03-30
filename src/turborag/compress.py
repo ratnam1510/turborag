@@ -103,6 +103,28 @@ def dequantize_qjl(
     return restored.astype(np.float32)
 
 
+def compressed_dot_naive(
+    q_packed: Uint8Array,
+    db_packed: Uint8Array,
+    dim: int,
+    bits: int = 3,
+    value_range: float = DEFAULT_VALUE_RANGE,
+) -> FloatArray:
+    """Approximate dot product via full dequantization (kept for validation).
+
+    This implementation unpacks and dequantizes all vectors before using a dense
+    matrix multiply. It is numerically correct but slow because it defeats the
+    purpose of compression by expanding everything to float32.
+
+    Use :func:`compressed_dot` for production — it uses a LUT-based scorer.
+    """
+    query = dequantize_qjl(q_packed, dim=dim, bits=bits, value_range=value_range)
+    database = dequantize_qjl(db_packed, dim=dim, bits=bits, value_range=value_range)
+    if query.shape[0] != 1:
+        raise ValueError("q_packed must represent exactly one query vector")
+    return (database @ query[0]).astype(np.float32)
+
+
 def compressed_dot(
     q_packed: Uint8Array,
     db_packed: Uint8Array,
@@ -110,17 +132,24 @@ def compressed_dot(
     bits: int = 3,
     value_range: float = DEFAULT_VALUE_RANGE,
 ) -> FloatArray:
-    """Approximate dot product in compressed space.
+    """Approximate dot product using LUT-based scoring (production path).
 
-    This baseline implementation unpacks and dequantizes the vectors before using a dense
-    matrix multiply. It is intentionally simple and should be replaced with a faster kernel
-    once the numeric behavior is locked down.
+    Instead of dequantizing the entire database to float32, this precomputes a
+    lookup table from the query and scans the packed database bytes directly.
+    This is dramatically faster for large shards because it avoids the float32
+    memory blowup that the naive path suffers from.
+
+    Falls back to the naive path only if the fast kernel is unavailable.
     """
-    query = dequantize_qjl(q_packed, dim=dim, bits=bits, value_range=value_range)
-    database = dequantize_qjl(db_packed, dim=dim, bits=bits, value_range=value_range)
-    if query.shape[0] != 1:
+    from .fast_kernels import build_query_lut, score_shard_lut
+
+    # Dequantize *only the query* to build the LUT
+    query_float = dequantize_qjl(q_packed, dim=dim, bits=bits, value_range=value_range)
+    if query_float.shape[0] != 1:
         raise ValueError("q_packed must represent exactly one query vector")
-    return (database @ query[0]).astype(np.float32)
+
+    lut = build_query_lut(query_float[0], bits=bits, value_range=value_range)
+    return score_shard_lut(db_packed, lut, dim=dim, bits=bits)
 
 
 def _pack_bits(values: Uint8Array, bits: int) -> Uint8Array:

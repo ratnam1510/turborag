@@ -12,10 +12,12 @@ Or directly::
 
     python -m turborag.mcp_server --index ./my_index
 
-The server exposes one tool:
+The server exposes three tools:
 
 - **turborag_query**: Search a TurboRAG sidecar index by a pre-computed
   query vector and return ranked results.
+- **turborag_describe**: Return index configuration and statistics.
+- **turborag_ingest**: Add new records to the index.
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ def _build_server(index_path: str):
     from mcp.types import Tool, TextContent
 
     from .index import TurboIndex
-    from .ingest import load_records_snapshot, SNAPSHOT_FILE_NAME
+    from .ingest import load_records_snapshot, write_records_snapshot, SNAPSHOT_FILE_NAME
 
     import numpy as np
 
@@ -69,13 +71,61 @@ def _build_server(index_path: str):
                     "required": ["query_vector"],
                 },
             ),
+            Tool(
+                name="turborag_describe",
+                description=(
+                    "Return the TurboRAG index configuration, size, "
+                    "and statistics."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="turborag_ingest",
+                description=(
+                    "Add new records to the TurboRAG index. Each record must "
+                    "include a chunk_id, text, and embedding vector."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "records": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "chunk_id": {"type": "string"},
+                                    "text": {"type": "string"},
+                                    "embedding": {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                    },
+                                    "source_doc": {"type": "string"},
+                                },
+                                "required": ["chunk_id", "text", "embedding"],
+                            },
+                            "description": "Records to add to the index.",
+                        },
+                    },
+                    "required": ["records"],
+                },
+            ),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
-        if name != "turborag_query":
+        if name == "turborag_query":
+            return _handle_query(arguments, index, records)
+        elif name == "turborag_describe":
+            return _handle_describe(index, records, index_dir)
+        elif name == "turborag_ingest":
+            return _handle_ingest(arguments, index, records, index_dir, snapshot_path)
+        else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
+    def _handle_query(arguments, index, records):
         raw_vector = arguments.get("query_vector")
         if raw_vector is None:
             return [TextContent(type="text", text="Error: query_vector is required")]
@@ -95,6 +145,65 @@ def _build_server(index_path: str):
             results.append(entry)
 
         return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
+    def _handle_describe(index, records, index_dir):
+        from ._cscore_wrapper import is_available as c_kernel_available
+
+        info = {
+            "index_path": str(index_dir),
+            "dim": index.dim,
+            "bits": index.bits,
+            "index_size": len(index),
+            "shard_size": index.shard_size,
+            "normalize": index.normalize,
+            "value_range": index.value_range,
+            "records_loaded": len(records),
+            "c_kernel_available": c_kernel_available(),
+        }
+        return [TextContent(type="text", text=json.dumps(info, indent=2))]
+
+    def _handle_ingest(arguments, index, records, index_dir, snapshot_path):
+        from .types import ChunkRecord
+
+        raw_records = arguments.get("records", [])
+        if not raw_records:
+            return [TextContent(type="text", text="Error: at least one record is required")]
+
+        ids = []
+        embeddings = []
+        new_records = []
+        for item in raw_records:
+            chunk_id = item.get("chunk_id")
+            text = item.get("text", "")
+            embedding = item.get("embedding")
+            if not chunk_id or not embedding:
+                continue
+
+            rec = ChunkRecord(
+                chunk_id=chunk_id,
+                text=text,
+                source_doc=item.get("source_doc"),
+            )
+            ids.append(chunk_id)
+            embeddings.append(embedding)
+            new_records.append(rec)
+
+        if not ids:
+            return [TextContent(type="text", text="Error: no valid records to ingest")]
+
+        matrix = np.asarray(embeddings, dtype=np.float32)
+        index.add(matrix, ids)
+        index.save(str(index_dir))
+
+        for rec in new_records:
+            records[rec.chunk_id] = rec
+        write_records_snapshot(records.values(), snapshot_path)
+
+        result = {
+            "added": len(ids),
+            "index_size": len(index),
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     return server, stdio_server
 

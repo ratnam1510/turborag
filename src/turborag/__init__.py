@@ -15,8 +15,22 @@ from .benchmark import (
     load_query_cases,
     write_benchmark_artifact,
 )
-from .compress import compressed_dot, dequantize_qjl, generate_rotation, quantize_qjl
+from .chunker import ChunkConfig, chunk_documents, chunk_file, chunk_text
+from .compress import compressed_dot, compressed_dot_naive, dequantize_qjl, generate_rotation, quantize_qjl
 from .embeddings import Embedder, SentenceTransformerEmbedder
+from .exceptions import (
+    ChunkingError,
+    DatasetFormatError,
+    DuplicateIDError,
+    EmbeddingError,
+    IDNotFoundError,
+    IndexConfigError,
+    IngestError,
+    QueryError,
+    ServiceError,
+    TurboRAGError,
+)
+from .fast_kernels import build_query_lut, score_shard_lut
 from .graph import ENTITY_PROMPT, GraphBuilder
 from .hybrid import HybridRetriever
 from .ingest import ImportedDataset, build_sidecar_index, load_dataset, open_sidecar_adapter
@@ -24,35 +38,62 @@ from .index import TurboIndex
 from .types import ChunkRecord, RetrievalResult
 
 __all__ = [
+    # Core
+    "TurboIndex",
+    "ChunkRecord",
+    "RetrievalResult",
+    # Compression
+    "compressed_dot",
+    "compressed_dot_naive",
+    "dequantize_qjl",
+    "generate_rotation",
+    "quantize_qjl",
+    # Fast kernels
+    "build_query_lut",
+    "score_shard_lut",
+    # Chunking
+    "ChunkConfig",
+    "chunk_text",
+    "chunk_file",
+    "chunk_documents",
+    # Graph
+    "ENTITY_PROMPT",
+    "GraphBuilder",
+    "HybridRetriever",
+    # Adapters
+    "ExistingRAGAdapter",
+    "TurboRetriever",
+    "TurboVectorStore",
+    # Embeddings
+    "Embedder",
+    "SentenceTransformerEmbedder",
+    # Ingest
+    "ImportedDataset",
+    "build_sidecar_index",
+    "load_dataset",
+    "open_sidecar_adapter",
+    # Benchmark
     "BenchmarkCase",
     "BenchmarkComparison",
     "BenchmarkReport",
     "BenchmarkSuite",
-    "ChunkRecord",
-    "ENTITY_PROMPT",
-    "Embedder",
     "ExactSearchBackend",
     "FaissSearchBackend",
-    "ExistingRAGAdapter",
-    "GraphBuilder",
-    "HybridRetriever",
-    "ImportedDataset",
-    "RetrievalResult",
-    "SentenceTransformerEmbedder",
-    "TurboRetriever",
     "TurboIndexBackend",
-    "TurboIndex",
-    "TurboVectorStore",
     "available_baselines",
     "build_baselines",
     "build_faiss_backend",
-    "build_sidecar_index",
-    "compressed_dot",
-    "dequantize_qjl",
-    "generate_rotation",
-    "load_dataset",
     "load_query_cases",
-    "open_sidecar_adapter",
-    "quantize_qjl",
     "write_benchmark_artifact",
+    # Exceptions
+    "TurboRAGError",
+    "IndexConfigError",
+    "DuplicateIDError",
+    "IDNotFoundError",
+    "IngestError",
+    "DatasetFormatError",
+    "ChunkingError",
+    "ServiceError",
+    "QueryError",
+    "EmbeddingError",
 ]
