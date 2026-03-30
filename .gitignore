@@ -8,3 +8,7 @@ venv/
 dist/
 build/
 *.egg-info/
+
+*.so
+*.dylib
+*.dll

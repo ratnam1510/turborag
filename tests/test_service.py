@@ -21,6 +21,9 @@ class FakeQueryEmbedder:
         }
         return mapping[text]
 
+    def embed(self, text: str):
+        return self.embed_query(text)
+
 
 def _build_index(tmp_path):
     dataset_path = tmp_path / "dataset.jsonl"
@@ -33,6 +36,10 @@ def _build_index(tmp_path):
     dataset = load_dataset(dataset_path)
     return build_sidecar_index(dataset, tmp_path / "index", bits=4)
 
+
+# ---------------------------------------------------------------------------
+#  Core API tests
+# ---------------------------------------------------------------------------
 
 def test_service_exposes_index_query_and_ingest(tmp_path):
     _build_index(tmp_path)
@@ -102,15 +109,137 @@ def test_service_rejects_text_queries_without_embedder(tmp_path):
     assert "text queries are not enabled" in response.json()["detail"].lower()
 
 
+# ---------------------------------------------------------------------------
+#  CORS tests
+# ---------------------------------------------------------------------------
+
+def test_cors_headers_present(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index", cors_origins=["http://example.com"]))
+
+    response = client.options(
+        "/query",
+        headers={
+            "origin": "http://example.com",
+            "access-control-request-method": "POST",
+        },
+    )
+    assert response.headers.get("access-control-allow-origin") == "http://example.com"
+
+
+def test_cors_wildcard_default(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    response = client.get("/health", headers={"origin": "http://anywhere.dev"})
+    assert response.headers.get("access-control-allow-origin") == "*"
+
+
+# ---------------------------------------------------------------------------
+#  Metrics endpoint
+# ---------------------------------------------------------------------------
+
+def test_metrics_endpoint(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    # Fire a query to generate metrics
+    client.post("/query", json={"query_vector": [1.0, 0.0, 0.0]})
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    data = response.json()
+    assert "uptime_seconds" in data
+    assert "endpoints" in data
+    assert "/query" in data["endpoints"]
+    assert data["endpoints"]["/query"]["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+#  Batch query endpoint
+# ---------------------------------------------------------------------------
+
+def test_batch_query(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    response = client.post(
+        "/query/batch",
+        json={
+            "queries": [
+                {"query_vector": [2.0, 0.0, 1.0]},
+                {"query_vector": [0.0, 2.0, 0.0]},
+            ],
+            "top_k": 1,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["batch_count"] == 2
+    assert len(data["results"]) == 2
+
+
+def test_batch_query_rejects_empty(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    response = client.post("/query/batch", json={"queries": []})
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+#  Request ID tracking
+# ---------------------------------------------------------------------------
+
+def test_request_id_logging(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    # The request should succeed even with a custom request ID header
+    response = client.post(
+        "/query",
+        json={"query_vector": [1.0, 0.0, 0.0]},
+        headers={"x-request-id": "test-rid-123"},
+    )
+    assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+#  Error handling
+# ---------------------------------------------------------------------------
+
+def test_invalid_json_body(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    response = client.post("/query", content=b"not json", headers={"content-type": "application/json"})
+    assert response.status_code == 400
+    assert "invalid json" in response.json()["detail"].lower()
+
+
+def test_unknown_query_fields_rejected(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    response = client.post("/query", json={"query_vector": [1.0], "bad_field": True})
+    assert response.status_code == 400
+    assert "unknown" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+#  CLI serve command
+# ---------------------------------------------------------------------------
+
 def test_serve_command_invokes_uvicorn(monkeypatch, tmp_path):
     _build_index(tmp_path)
 
     captured: dict[str, object] = {}
 
-    def fake_run(app, host: str, port: int):
+    def fake_run(app, host: str, port: int, **kwargs):
         captured["app"] = app
         captured["host"] = host
         captured["port"] = port
+        captured["workers"] = kwargs.get("workers", 1)
 
     import uvicorn
 
@@ -125,3 +254,23 @@ def test_serve_command_invokes_uvicorn(monkeypatch, tmp_path):
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9090
     assert captured["app"] is not None
+
+
+def test_serve_workers_option(monkeypatch, tmp_path):
+    _build_index(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, **kwargs):
+        captured.update(kwargs)
+
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["serve", "--index", str(tmp_path / "index"), "--workers", "4"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured.get("workers") == 4

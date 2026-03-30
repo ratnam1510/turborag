@@ -65,6 +65,7 @@ class TurboIndex:
         self.value_range = value_range
         self.storage_dir = Path(storage_dir) if storage_dir else None
         self.rotation = generate_rotation(dim, seed)
+        self._rotation_t = self.rotation.T.copy()  # cached transpose for hot path
         self._bytes_per_vector = bytes_per_vector(dim, bits)
         self._shards: list[_Shard] = []
         self._ids: set[str] = set()
@@ -111,6 +112,21 @@ class TurboIndex:
         query_rotated = self._prepare_query(query)
         lut = build_query_lut(query_rotated, bits=self.bits, value_range=self.value_range)
 
+        # Single shard fast path — skip candidate merging overhead
+        if len(self._shards) == 1:
+            shard = self._shards[0]
+            scores = score_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits)
+            local_k = min(k, len(scores))
+            if local_k == 0:
+                return []
+            if local_k == len(scores):
+                top_indices = np.argsort(scores)[::-1]
+            else:
+                top_indices = np.argpartition(scores, -local_k)[-local_k:]
+                top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
+            return [(shard.ids[int(i)], float(scores[int(i)])) for i in top_indices]
+
+        # Multi-shard path
         candidates: list[tuple[str, float]] = []
         for shard in self._shards:
             scores = score_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits)
@@ -200,7 +216,7 @@ class TurboIndex:
             norm = np.linalg.norm(vector)
             vector = (vector / max(norm, 1e-12)).astype(np.float32)
 
-        rotated = (vector.reshape(1, -1) @ self.rotation.T).astype(np.float32)
+        rotated = (vector.reshape(1, -1) @ self._rotation_t).astype(np.float32)
         return rotated[0]
 
     def save(self, path: str) -> None:
@@ -240,6 +256,7 @@ class TurboIndex:
         self.value_range = float(config.get("value_range", DEFAULT_VALUE_RANGE))
         self.storage_dir = index_dir
         self.rotation = np.load(index_dir / "rotation.npy").astype(np.float32)
+        self._rotation_t = self.rotation.T.copy()
         self._bytes_per_vector = bytes_per_vector(self.dim, self.bits)
         self._shards = []
         self._ids = set()

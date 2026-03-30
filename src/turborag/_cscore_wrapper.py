@@ -81,7 +81,7 @@ def _get_lib() -> ctypes.CDLL | None:
         _load_attempted = True
         _lib = _find_or_compile()
         if _lib is not None:
-            # Set up function signatures
+            # Set up function signatures — original dispatch
             _lib.score_lut_dispatch.restype = ctypes.c_int
             _lib.score_lut_dispatch.argtypes = [
                 ctypes.POINTER(ctypes.c_uint8),   # packed_db
@@ -92,6 +92,32 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.c_int,                       # bits
                 ctypes.c_int,                       # bytes_per_vec
             ]
+
+            # Fused dispatch
+            _lib.score_fused_dispatch.restype = ctypes.c_int
+            _lib.score_fused_dispatch.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),   # packed_db
+                ctypes.POINTER(ctypes.c_double),   # fused_lut
+                ctypes.POINTER(ctypes.c_double),   # scores_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # n_bytes
+                ctypes.c_int,                       # bytes_per_vec
+            ]
+
+            # Fused LUT builders
+            _lib.build_fused_4bit.restype = None
+            _lib.build_fused_4bit.argtypes = [
+                ctypes.POINTER(ctypes.c_double),   # lut
+                ctypes.POINTER(ctypes.c_double),   # fused out
+                ctypes.c_int,                       # dim
+            ]
+            _lib.build_fused_2bit.restype = None
+            _lib.build_fused_2bit.argtypes = [
+                ctypes.POINTER(ctypes.c_double),   # lut
+                ctypes.POINTER(ctypes.c_double),   # fused out
+                ctypes.c_int,                       # dim
+            ]
+
             logger.info("C scoring kernel loaded successfully")
         else:
             logger.info("Using Python scoring kernel (C extension not available)")
@@ -127,6 +153,78 @@ def score_lut_c(
         ctypes.c_int(n_vectors),
         ctypes.c_int(dim),
         ctypes.c_int(bits),
+        ctypes.c_int(bytes_per_vec),
+    )
+
+    if ret != 0:
+        return None
+
+    return scores.astype(np.float32)
+
+
+def build_fused_lut_c(
+    lut: NDArray[np.float64],
+    dim: int,
+    bits: int,
+) -> NDArray[np.float64] | None:
+    """Build a fused byte LUT in C. Returns None if unavailable."""
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    if bits == 4:
+        n_bytes = (dim + 1) // 2
+    elif bits == 2:
+        n_bytes = (dim + 3) // 4
+    else:
+        return None  # 3-bit doesn't use fused LUT
+
+    lut_c = np.ascontiguousarray(lut, dtype=np.float64)
+    fused = np.zeros(n_bytes * 256, dtype=np.float64)
+
+    if bits == 4:
+        lib.build_fused_4bit(
+            lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            fused.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            ctypes.c_int(dim),
+        )
+    else:
+        lib.build_fused_2bit(
+            lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            fused.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            ctypes.c_int(dim),
+        )
+
+    return fused
+
+
+def score_fused_c(
+    packed_db: NDArray[np.uint8],
+    fused_lut: NDArray[np.float64],
+    n_bytes: int,
+) -> NDArray[np.float32] | None:
+    """Score using a pre-built fused byte LUT. Returns None if unavailable."""
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
+    fused_c = np.ascontiguousarray(fused_lut, dtype=np.float64)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+
+    scores = np.zeros(n_vectors, dtype=np.float64)
+
+    ret = lib.score_fused_dispatch(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        fused_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(n_bytes),
         ctypes.c_int(bytes_per_vec),
     )
 
