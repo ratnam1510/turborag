@@ -2,9 +2,16 @@
 
 This document maps the PDF specification to the current repository state.
 
-## Source Of Truth
+## Source Papers
 
-The implementation is being built from [TurboRAG Specification - Understanding Google.pdf](file:///Users/ratnamshah/turborag/TurboRAG%20Specification%20-%20Understanding%20Google.pdf).
+The implementation is built from the quantization techniques described in:
+
+- [TurboQuant: Redefining AI efficiency with extreme compression](https://arxiv.org/abs/2504.19874) — Amir Zandieh, Vahab Mirrokni (Google Research, ICLR 2026)
+- [Quantized Johnson-Lindenstrauss (QJL)](https://arxiv.org/abs/2406.03482) — zero-overhead 1-bit sign quantization (AAAI 2025)
+- [PolarQuant](https://arxiv.org/abs/2502.02617) — polar-coordinate quantization with no memory overhead (AISTATS 2026)
+- [Google Research blog post](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
+
+The original local reference PDF (`TurboRAG Specification - Understanding Google.pdf`) was derived from these papers.
 
 ## Current Status
 

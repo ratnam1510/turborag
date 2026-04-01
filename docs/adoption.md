@@ -8,29 +8,34 @@ For the full install and rollout sequence, see [docs/current-rag-rollout.md](fil
 
 ## What To Install
 
-Embedded Python integration:
+### From PyPI
 
 ```bash
-pip install -e '.[dev]'
+# Core
+pip install turborag
+
+# With local text-query embedding
+pip install turborag[embed]
+
+# With HTTP sidecar service
+pip install turborag[serve]
+
+# With MCP agent server
+pip install turborag[mcp]
+
+# Everything
+pip install turborag[all]
 ```
 
-Embedded integration with local text-query embedding:
+### From Source
 
 ```bash
-pip install -e '.[dev,embed]'
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
 ```
 
-HTTP sidecar service:
-
-```bash
-pip install -e '.[dev,serve]'
-```
-
-MCP tool server:
-
-```bash
-pip install -e '.[dev,mcp]'
-```
+For the full installation reference, see [docs/installation.md](installation.md).
 
 ## The Easiest Migration Pattern
 

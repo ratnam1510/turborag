@@ -11,34 +11,31 @@ The key point is simple: TurboRAG does not need to replace the current database.
 
 ## What A Team Installs
 
-For a Python application embedding TurboRAG directly:
+### From PyPI
 
 ```bash
-pip install -e '.[dev]'
+# Core
+pip install turborag
+
+# With text-query embedding
+pip install turborag[embed]
+
+# With HTTP sidecar service
+pip install turborag[serve]
+
+# With MCP agent access
+pip install turborag[mcp]
+
+# Everything
+pip install turborag[all]
 ```
 
-If the application also wants local text-query embedding support:
+### From Source
 
 ```bash
-pip install -e '.[dev,embed]'
-```
-
-If the team wants to run TurboRAG as an HTTP sidecar service:
-
-```bash
-pip install -e '.[dev,serve]'
-```
-
-If the team wants MCP agent access:
-
-```bash
-pip install -e '.[dev,mcp]'
-```
-
-If they want all currently supported optional surfaces:
-
-```bash
-pip install -e '.[dev,serve,mcp,embed,graph]'
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
 ```
 
 ## What Stays The Same
@@ -192,7 +189,6 @@ What works now:
 
 What does not exist yet:
 
-- raw PDF or markdown ingest directly into the service,
 - persisted graph APIs and graph visualisation endpoints,
 - deeper production-native LangChain and LlamaIndex adapters,
-- Docker packaging and published benchmark artifacts.
+- published benchmark artifacts on real external datasets.

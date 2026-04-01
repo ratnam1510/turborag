@@ -1,36 +1,36 @@
 # TurboRAG
 
-TurboRAG is a production-grade compressed vector retrieval engine with graph-augmented search, built from the architecture described in `TurboRAG Specification - Understanding Google.pdf`.
+TurboRAG is a production-grade compressed vector retrieval engine with graph-augmented search, implementing the quantization techniques from Google Research's [TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026), [Quantized Johnson-Lindenstrauss (QJL)](https://arxiv.org/abs/2406.03482) (AAAI 2025), and [PolarQuant](https://arxiv.org/abs/2502.02617) (AISTATS 2026) papers by Amir Zandieh and Vahab Mirrokni.
 
 ## Performance
 
 ### Small Scale (1K vectors, 128-dim, 100 queries, k=10, 4-bit)
 
-| Backend | Recall@10 | MRR | QPS |
-|---|---|---|---|
-| **TurboRAG 4-bit** | **1.000** | **1.000** | **6,209** |
-| Exact float32 | 1.000 | 1.000 | 26,774 |
-| FAISS Flat | 1.000 | 1.000 | 32,384 |
-| FAISS HNSW | 1.000 | 1.000 | 23,640 |
-| FAISS IVF-PQ | 0.990 | 0.990 | 27,438 |
+| Backend | Recall@10 | MRR | QPS | Memory |
+|---|---|---|---|---|
+| **TurboRAG 4-bit** | **1.000** | **1.000** | **6,209** | **0.08 MB** |
+| Exact float32 | 1.000 | 1.000 | 26,774 | 0.49 MB |
+| FAISS Flat | 1.000 | 1.000 | 32,384 | 0.49 MB |
+| FAISS HNSW | 1.000 | 1.000 | 23,640 | 0.55 MB |
+| FAISS IVF-PQ | 0.990 | 0.990 | 27,438 | < 0.49 MB |
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
-| Backend | Recall@10 | MRR | QPS | Notes |
-|---|---|---|---|---|
-| **TurboRAG exact** | **1.000** | **1.000** | **67** | Guaranteed perfect recall |
-| **TurboRAG fast** | **0.975** | **0.975** | **274** | Binary sketch head + LUT refine |
-| Exact float32 | 1.000 | 1.000 | 240 | Brute force |
-| FAISS Flat | 1.000 | 1.000 | 232 | Brute force |
-| FAISS HNSW | 0.645 | 0.645 | 1,928 | Graph traversal |
+| Backend | Recall@10 | MRR | QPS | Memory | Notes |
+|---|---|---|---|---|---|
+| **TurboRAG exact** | **1.000** | **1.000** | **67** | **18.3 MB** | Guaranteed perfect recall |
+| **TurboRAG fast** | **0.975** | **0.975** | **274** | **18.3 MB** | Binary sketch head + LUT refine |
+| Exact float32 | 1.000 | 1.000 | 240 | 146.5 MB | Brute force |
+| FAISS Flat | 1.000 | 1.000 | 232 | 146.5 MB | Brute force |
+| FAISS HNSW | 0.645 | 0.645 | 1,928 | 152.6 MB | Vectors + graph |
 
 TurboRAG `auto` mode selects the best strategy per query: `exact` for small indexes, `fast` for large ones.
 
 **Key advantages:**
+- **8× memory compression** — 18.3 MB vs 146.5 MB float32 at 100K scale, with perfect recall in exact mode
 - **Adaptive two-stage search** — binary sketch pre-filter (SimHash + POPCNT) with full LUT refine gives 4× speedup over exact with 97.5% recall
 - **Guaranteed exact mode** — `mode="exact"` always gives perfect recall when accuracy is non-negotiable
-- **10× memory reduction** vs float32 with zero recall loss in exact mode
-- **64% higher recall than HNSW** — TurboRAG fast (0.975) vs FAISS HNSW (0.645) at comparable throughput
+- **64% higher recall than HNSW** — TurboRAG fast (0.975) vs FAISS HNSW (0.645), while using 8× less memory
 - Production-hardened with atomic persistence, concurrency-safe HTTP service, and input validation
 
 ## What Ships Today
@@ -91,18 +91,25 @@ for chunk_id, score in results:
 
 ## Install
 
+### From PyPI
+
 ```bash
 # Core
-pip install -e .
+pip install turborag
 
 # Everything
-pip install -e '.[all]'
-
-# Common dev setup
-pip install -e '.[dev,serve,mcp]'
+pip install turborag[all]
 ```
 
-Individual extras: `graph`, `embed`, `ingest`, `serve`, `mcp`, `all`, `dev`.
+### From Source
+
+```bash
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
+```
+
+Individual extras: `graph`, `embed`, `ingest`, `serve`, `mcp`, `all`, `dev`. See [docs/installation.md](docs/installation.md) for details.
 
 ## Run As A Service
 
@@ -180,6 +187,7 @@ pytest
 
 ## Documentation
 
+- [Installation](docs/installation.md)
 - [Adoption Guide](docs/adoption.md)
 - [Architecture](docs/architecture.md)
 - [Benchmarking](docs/benchmarking.md)

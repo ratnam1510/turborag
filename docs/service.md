@@ -1,5 +1,23 @@
 # Service API
 
+## Install
+
+### From PyPI
+
+```bash
+pip install turborag[serve]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[serve]'
+```
+
+## Usage
+
 TurboRAG can run as a local or remote HTTP sidecar over an existing index:
 
 ```bash

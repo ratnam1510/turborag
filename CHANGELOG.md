@@ -1,11 +1,28 @@
 # Changelog
 
+## 0.4.0 - 2026-04-01
+
+### New Features
+
+- **Adaptive two-stage search** with three modes: `exact`, `fast`, and `auto` (system-selected).
+- **Binary sketch head** — SimHash sign-bit pre-filter with C-level POPCNT Hamming scanner. At index time, each vector's rotated sign bits are stored as a 48-byte sketch. At query time, XOR + POPCNT scans all sketches in ~0.5ms, then the top candidates are refined with the full LUT scorer.
+- Result: **4× speedup** over exhaustive on 100K vectors (67 → 274 QPS) with 97.5% recall.
+- `mode="auto"` picks `exact` for indexes <10K vectors and `fast` for larger ones.
+- Sketches are persisted alongside shard files (`.sketch.bin`), survive save/load/delete round-trips.
+- `TurboIndexBackend` benchmark backend now supports `mode` parameter for side-by-side exact vs fast comparison.
+
+### Documentation
+
+- Updated README with memory columns in all benchmark tables.
+- Changed source reference from local PDF to the actual TurboQuant/QJL/PolarQuant papers (Google Research, ICLR/AAAI/AISTATS 2025-2026).
+- Updated spec-status and spec-decisions to reference the published papers.
+
 ## 0.3.0 - 2026-03-30
 
 ### Performance
 
 - Rewrote the 3-bit C scoring kernel with a **fused byte-triplet approach**: processes 3 bytes (8 dims) at a time with precomputed per-byte LUTs instead of per-dimension extraction.
-- Result: **4.4x speedup** on large-scale benchmark (15 → 65 QPS at 100K×384 3-bit).
+- Result: **4.4× speedup** on large-scale benchmark (15 → 65 QPS at 100K×384 3-bit).
 - Avoided redundant `np.ascontiguousarray` copies in ctypes wrapper when arrays are already contiguous.
 
 ### Production Hardening

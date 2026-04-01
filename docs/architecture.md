@@ -113,22 +113,30 @@ index/
   config.json
   records.jsonl
   rotation.npy
+  sketch.bin
   shards/
     shard_000.bin
     shard_000.ids.json
+    shard_000.sketch.bin
     shard_001.bin
     shard_001.ids.json
+    shard_001.sketch.bin
 ```
 
-`config.json` stores the compression and index settings. Each `.bin` file is a raw packed byte matrix with one row per vector and one file per shard. `records.jsonl` is optional, but when present it lets the CLI, HTTP service, and MCP server hydrate results without reaching back into an external database.
+`config.json` stores the compression and index settings. Each `.bin` file is a raw packed byte matrix with one row per vector and one file per shard. `.sketch.bin` files store binary SimHash sketches used by the adaptive search pre-filter. `records.jsonl` is optional, but when present it lets the CLI, HTTP service, and MCP server hydrate results without reaching back into an external database.
 
 ## Query Flow
+
+TurboRAG supports three search modes selected via `mode`: `auto` (default), `exact`, and `fast`.
 
 1. Accept a float32 query vector.
 2. Optionally L2-normalise it.
 3. Rotate it with the stored orthogonal matrix.
 4. Quantize and bit-pack it using the configured bit width.
-5. Score each shard with the LUT-based C scoring kernel with fused byte-triplet acceleration.
+5. **Mode selection**:
+   - `exact`: Score every vector with the LUT-based C scoring kernel with fused byte-triplet acceleration.
+   - `fast`: Compute a binary SimHash sketch of the query, use POPCNT Hamming distance against per-shard `.sketch.bin` files to pre-filter candidates, then refine only the top candidates with the full LUT scorer.
+   - `auto`: Select `exact` for small indexes and `fast` for large ones based on index size.
 6. Merge top candidates across shards.
 7. If hybrid mode is enabled, merge in graph-derived candidates.
 8. If running through an adapter, hydrate the ranked chunk IDs from the existing application record store.

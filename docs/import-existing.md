@@ -8,16 +8,22 @@ If you want the full production rollout sequence after import, read [docs/curren
 
 ## Install
 
-For CLI import and query:
+### From PyPI
 
 ```bash
-pip install -e '.[dev]'
+# CLI import and query
+pip install turborag
+
+# With HTTP sidecar serving after import
+pip install turborag[serve]
 ```
 
-For HTTP sidecar serving after import:
+### From Source
 
 ```bash
-pip install -e '.[dev,serve]'
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
 ```
 
 ## Supported Import Formats

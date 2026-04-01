@@ -4,24 +4,25 @@
 
 ### Small Scale (1K vectors, 128-dim, 100 queries, k=10, 4-bit)
 
-| Backend | Recall@10 | MRR | QPS |
-|---|---|---|---|
-| TurboRAG 4-bit | 1.000 | 1.000 | 6,209 |
-| Exact float32 | 1.000 | 1.000 | 26,774 |
-| FAISS Flat | 1.000 | 1.000 | 32,384 |
-| FAISS HNSW | 1.000 | 1.000 | 23,640 |
-| FAISS IVF-PQ | 0.990 | 0.990 | 27,438 |
+| Backend | Recall@10 | MRR | QPS | Memory |
+|---|---|---|---|---|
+| TurboRAG 4-bit | 1.000 | 1.000 | 6,209 | 0.08 MB |
+| Exact float32 | 1.000 | 1.000 | 26,774 | 0.49 MB |
+| FAISS Flat | 1.000 | 1.000 | 32,384 | 0.49 MB |
+| FAISS HNSW | 1.000 | 1.000 | 23,640 | 0.55 MB |
+| FAISS IVF-PQ | 0.990 | 0.990 | 27,438 | < 0.49 MB |
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
-| Backend | Recall@10 | MRR | QPS |
-|---|---|---|---|
-| TurboRAG 3-bit | 1.000 | 1.000 | 65 |
-| Exact float32 | 1.000 | 1.000 | 240 |
-| FAISS Flat | 1.000 | 1.000 | 232 |
-| FAISS HNSW | 0.645 | 0.645 | 1,928 |
+| Backend | Recall@10 | MRR | QPS | Memory |
+|---|---|---|---|---|
+| TurboRAG exact | 1.000 | 1.000 | 67 | 18.3 MB |
+| TurboRAG fast | 0.975 | 0.975 | 274 | 18.3 MB |
+| Exact float32 | 1.000 | 1.000 | 240 | 146.5 MB |
+| FAISS Flat | 1.000 | 1.000 | 232 | 146.5 MB |
+| FAISS HNSW | 0.645 | 0.645 | 1,928 | 152.6 MB |
 
-TurboRAG maintains perfect recall at both scales. At 100K×384 3-bit, the fused byte-triplet C kernel achieves a 4.4x speedup over the previous implementation (15 → 65 QPS). FAISS HNSW trades recall (0.645) for throughput at large scale.
+TurboRAG maintains perfect recall in exact mode at both scales. The `fast` mode uses a binary sketch head with POPCNT pre-filtering followed by LUT refine, achieving 4x throughput over exact with 97.5% recall. FAISS HNSW trades recall (0.645) for throughput at large scale.
 
 ---
 
@@ -32,10 +33,18 @@ TurboRAG now supports two benchmark modes:
 
 ## Install
 
-Core benchmark flow:
+### From PyPI
 
 ```bash
-pip install -e '.[dev]'
+pip install turborag
+```
+
+### From Source
+
+```bash
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
 ```
 
 If the environment already has the `faiss` Python module, TurboRAG can also compare against:

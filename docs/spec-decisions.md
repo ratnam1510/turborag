@@ -1,12 +1,17 @@
 # Spec Decisions
 
-This document records the places where the source PDF left room for interpretation and the exact decisions used in this implementation.
+This document records the places where the TurboQuant/QJL/PolarQuant papers left room for interpretation and the exact decisions used in this implementation.
+
+Reference papers:
+- [TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026)
+- [Quantized Johnson-Lindenstrauss (QJL)](https://arxiv.org/abs/2406.03482) (AAAI 2025)
+- [PolarQuant](https://arxiv.org/abs/2502.02617) (AISTATS 2026)
 
 ## 1. Quantization Strategy
 
 ### Spec Tension
 
-The PDF describes QJL, SRHT projection, sign quantization, and then later provides scalar min/max quantization pseudocode.
+The papers describe QJL, SRHT projection, sign quantization, and scalar min/max quantization with different tradeoffs.
 
 ### Decision
 
