@@ -1,5 +1,30 @@
 # Benchmarking
 
+## Latest Results
+
+### Small Scale (1K vectors, 128-dim, 100 queries, k=10, 4-bit)
+
+| Backend | Recall@10 | MRR | QPS |
+|---|---|---|---|
+| TurboRAG 4-bit | 1.000 | 1.000 | 6,209 |
+| Exact float32 | 1.000 | 1.000 | 26,774 |
+| FAISS Flat | 1.000 | 1.000 | 32,384 |
+| FAISS HNSW | 1.000 | 1.000 | 23,640 |
+| FAISS IVF-PQ | 0.990 | 0.990 | 27,438 |
+
+### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
+
+| Backend | Recall@10 | MRR | QPS |
+|---|---|---|---|
+| TurboRAG 3-bit | 1.000 | 1.000 | 65 |
+| Exact float32 | 1.000 | 1.000 | 240 |
+| FAISS Flat | 1.000 | 1.000 | 232 |
+| FAISS HNSW | 0.645 | 0.645 | 1,928 |
+
+TurboRAG maintains perfect recall at both scales. At 100K×384 3-bit, the fused byte-triplet C kernel achieves a 4.4x speedup over the previous implementation (15 → 65 QPS). FAISS HNSW trades recall (0.645) for throughput at large scale.
+
+---
+
 TurboRAG now supports two benchmark modes:
 
 - single-backend evaluation of TurboRAG itself,

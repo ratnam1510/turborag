@@ -24,6 +24,10 @@ Uint8Array = NDArray[np.uint8]
 SUPPORTED_BITS: Final[set[int]] = {2, 3, 4}
 
 
+# ---------------------------------------------------------------------------
+# LUT construction helpers
+# ---------------------------------------------------------------------------
+
 def build_query_lut(
     query_rotated: FloatArray,
     bits: int,
@@ -48,6 +52,10 @@ def build_query_lut(
     return q[:, np.newaxis] * dequant_values[np.newaxis, :]  # (dim, num_levels)
 
 
+# ---------------------------------------------------------------------------
+# Scoring — single query
+# ---------------------------------------------------------------------------
+
 def score_shard_lut(
     packed_db: Uint8Array,
     lut: Float64Array,
@@ -56,8 +64,8 @@ def score_shard_lut(
 ) -> FloatArray:
     """Score all vectors in a packed shard using a precomputed LUT.
 
-    Tries the compiled C kernel first for maximum speed. Falls back to the
-    Python implementation automatically if the C extension is not available.
+    *lut* must be a raw ``(dim, 2**bits)`` float64 array returned by
+    :func:`build_query_lut`.
 
     Memory usage is O(n_vectors) regardless of dim — never allocates a full
     float32 dequantized matrix.
@@ -69,16 +77,17 @@ def score_shard_lut(
     if packed.ndim == 1:
         packed = packed.reshape(1, -1)
 
-    # Try C kernel first
+    # ---- Fallback: per-dimension C kernel ----
     try:
         from ._cscore_wrapper import score_lut_c
+
         c_result = score_lut_c(packed, lut, dim, bits)
         if c_result is not None:
             return c_result
     except ImportError:
         pass
 
-    # Python fallback
+    # ---- Pure-Python fallback ----
     n_vectors = packed.shape[0]
     scores = np.zeros(n_vectors, dtype=np.float64)
 
@@ -91,6 +100,10 @@ def score_shard_lut(
 
     return scores.astype(np.float32)
 
+
+# ---------------------------------------------------------------------------
+# Accumulation helpers (pure-Python fallback)
+# ---------------------------------------------------------------------------
 
 def _accumulate_4bit(
     packed: Uint8Array, lut: Float64Array, dim: int, scores: Float64Array
@@ -157,6 +170,10 @@ def _accumulate_general(
         bit_offset += bits
 
 
+# ---------------------------------------------------------------------------
+# Scoring — batched queries
+# ---------------------------------------------------------------------------
+
 def score_shard_lut_batch(
     packed_db: Uint8Array,
     luts: list[Float64Array],
@@ -164,6 +181,9 @@ def score_shard_lut_batch(
     bits: int,
 ) -> FloatArray:
     """Score all vectors for multiple queries at once.
+
+    Each element of *luts* must be a raw ``(dim, 2**bits)`` float64 array
+    returned by :func:`build_query_lut`.
 
     Returns float32 array of shape ``(n_queries, n_vectors)``.
     """

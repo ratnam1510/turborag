@@ -128,7 +128,7 @@ index/
 2. Optionally L2-normalise it.
 3. Rotate it with the stored orthogonal matrix.
 4. Quantize and bit-pack it using the configured bit width.
-5. Score each shard with `compressed_dot`.
+5. Score each shard with the LUT-based C scoring kernel with fused byte-triplet acceleration.
 6. Merge top candidates across shards.
 7. If hybrid mode is enabled, merge in graph-derived candidates.
 8. If running through an adapter, hydrate the ranked chunk IDs from the existing application record store.
@@ -141,6 +141,8 @@ index/
 3. Accept HTTP queries as either precomputed vectors or text.
 4. Route query execution through the same `TurboIndex` and adapter logic used elsewhere in the package.
 5. Optionally append new embedding-level records and update the sidecar metadata in place.
+
+All ingest mutations are protected by a `threading.Lock` for concurrency safety when running with multiple workers. All handlers catch `TurboRAGError` and return structured error responses.
 
 ## Existing-RAG Import Flow
 

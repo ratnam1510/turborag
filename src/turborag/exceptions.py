@@ -10,15 +10,15 @@ class TurboRAGError(Exception):
     """Base exception for all TurboRAG errors."""
 
 
-class IndexError(TurboRAGError):
+class IndexOperationError(TurboRAGError):
     """Error during index operations (add, search, save, load)."""
 
 
-class IndexConfigError(IndexError):
+class IndexConfigError(IndexOperationError):
     """Invalid or incompatible index configuration."""
 
 
-class DuplicateIDError(IndexError):
+class DuplicateIDError(IndexOperationError):
     """Attempted to add a vector with an ID that already exists in the index."""
 
     def __init__(self, chunk_id: str) -> None:
@@ -26,7 +26,7 @@ class DuplicateIDError(IndexError):
         super().__init__(f"duplicate id detected: {chunk_id}")
 
 
-class IDNotFoundError(IndexError):
+class IDNotFoundError(IndexOperationError):
     """Attempted to access a vector ID that does not exist in the index."""
 
     def __init__(self, chunk_id: str) -> None:

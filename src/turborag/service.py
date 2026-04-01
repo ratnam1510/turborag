@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -18,6 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .adapters.compat import ExistingRAGAdapter
+from .exceptions import TurboRAGError
 from .ingest import SNAPSHOT_FILE_NAME, load_records_snapshot, write_records_snapshot
 from .index import TurboIndex
 from .types import ChunkRecord, RetrievalResult
@@ -262,6 +264,7 @@ def create_app(
 ) -> Starlette:
     service = TurboService.open(index_path, query_embedder=query_embedder)
     metrics = Metrics()
+    _write_lock = threading.Lock()
 
     # --- Helpers ---
 
@@ -301,7 +304,7 @@ def create_app(
             metrics.record_latency("/query", elapsed)
             logger.info("query rid=%s k=%s latency=%.1fms", rid, payload.get("top_k", 5), elapsed)
             return JSONResponse(result)
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
             logger.warning("query rid=%s error=%s", rid, exc)
             return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -318,7 +321,7 @@ def create_app(
             metrics.record_latency("/query/batch", elapsed)
             logger.info("query_batch rid=%s n=%d latency=%.1fms", rid, result["batch_count"], elapsed)
             return JSONResponse(result)
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -329,12 +332,13 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            result = service.ingest_records(payload)
+            with _write_lock:
+                result = service.ingest_records(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest", elapsed)
             logger.info("ingest rid=%s added=%d latency=%.1fms", rid, result["added"], elapsed)
             return JSONResponse(result)
-        except ValueError as exc:
+        except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -345,12 +349,13 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            result = service.ingest_text(payload)
+            with _write_lock:
+                result = service.ingest_text(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest-text", elapsed)
             logger.info("ingest_text rid=%s added=%d latency=%.1fms", rid, result["added"], elapsed)
             return JSONResponse(result)
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
             return JSONResponse({"detail": str(exc)}, status_code=400)
 

@@ -13,7 +13,7 @@ The implementation is being built from [TurboRAG Specification - Understanding G
 - Core package scaffolding and packaging with `pyproject.toml`.
 - Deterministic rotation generation (`generate_rotation`).
 - Bit-packed scalar quantization, dequantization, and LUT-based compressed scoring.
-- **C scoring kernel** (`_cscore.c`) with ctypes auto-compilation for 10-50× speedup over Python.
+- **C scoring kernel** (`_cscore.c`) with fused byte-triplet acceleration, ctypes auto-compilation, and heap-allocated buffers for large dimensions.
 - `TurboIndex` with in-memory and memmap-backed shard persistence, batch search, threaded shard scanning, delete, and update.
 - `GraphBuilder` with structured extraction prompts, SQLite caching, Leiden community detection, **graph persistence** (save/load to GraphML + JSON).
 - `HybridRetriever` for dense plus graph retrieval with entity detection, BFS expansion, and result explanations.
@@ -42,13 +42,23 @@ The implementation is being built from [TurboRAG Specification - Understanding G
 
 ## Performance Summary
 
-| | Recall@10 | QPS | Memory (1K×128) |
-|---|---|---|---|
-| **TurboRAG 3-bit** | 1.000 | 7,236 | 0.3 MB |
-| Exact float32 | 1.000 | 27,280 | 2.9 MB |
-| FAISS HNSW | 1.000 | 21,600 | 2.9 MB |
+### Small Scale (1K×128, 4-bit)
 
-TurboRAG achieves perfect recall with 10.7× memory reduction at 3-bit compression.
+| | Recall@10 | QPS |
+|---|---|---|
+| **TurboRAG 4-bit** | 1.000 | 6,209 |
+| Exact float32 | 1.000 | 26,774 |
+| FAISS HNSW | 1.000 | 23,640 |
+
+### Large Scale (100K×384, 3-bit)
+
+| | Recall@10 | QPS |
+|---|---|---|
+| **TurboRAG 3-bit** | 1.000 | 65 |
+| Exact float32 | 1.000 | 240 |
+| FAISS HNSW | 0.645 | 1,928 |
+
+TurboRAG achieves perfect recall at both scales. At large scale, FAISS HNSW drops to 0.645 recall while TurboRAG maintains 1.000.
 
 ## Important Precision Note
 

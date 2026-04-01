@@ -123,9 +123,9 @@ class TestDomainExceptions:
     """Verify the exception hierarchy works correctly."""
 
     def test_duplicate_id_error_is_index_error(self) -> None:
-        from turborag.exceptions import IndexError as TurboIndexError
+        from turborag.exceptions import IndexOperationError
         err = DuplicateIDError("chunk-1")
-        assert isinstance(err, TurboIndexError)
+        assert isinstance(err, IndexOperationError)
         assert err.chunk_id == "chunk-1"
         assert "chunk-1" in str(err)
 

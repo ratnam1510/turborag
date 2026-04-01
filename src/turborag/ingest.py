@@ -83,7 +83,7 @@ def load_jsonl_dataset(path: str | Path) -> ImportedDataset:
 
 def load_npz_dataset(path: str | Path) -> ImportedDataset:
     source = Path(path)
-    with np.load(source, allow_pickle=True) as data:
+    with np.load(source, allow_pickle=False) as data:
         if "embeddings" not in data or "ids" not in data:
             raise ValueError("npz datasets must contain 'embeddings' and 'ids'")
 
@@ -242,7 +242,8 @@ def _detect_format(path: Path, requested: str) -> str:
 def _optional_array(data: Any, key: str, default: list[Any]) -> list[Any]:
     if key not in data:
         return default
-    values = np.asarray(data[key], dtype=object).tolist()
+    raw = data[key]
+    values = [str(v) if v is not None else None for v in raw.tolist()]
     if len(values) != len(default):
         raise ValueError(f"optional array '{key}' must have length {len(default)}")
     return values
@@ -251,7 +252,8 @@ def _optional_array(data: Any, key: str, default: list[Any]) -> list[Any]:
 def _optional_metadata(data: Any, count: int) -> list[dict[str, Any]]:
     if "metadata_json" not in data:
         return [{} for _ in range(count)]
-    raw_values = np.asarray(data["metadata_json"], dtype=object).tolist()
+    raw = data["metadata_json"]
+    raw_values = [str(v) if v is not None else "" for v in raw.tolist()]
     if len(raw_values) != count:
         raise ValueError(f"optional array 'metadata_json' must have length {count}")
     return [json.loads(value) if value else {} for value in raw_values]

@@ -23,6 +23,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -139,9 +140,81 @@ void score_fused(
 }
 
 /* ===================================================================== */
-/*  3-bit scoring — column-major with byte-boundary spanning             */
-/*  (no fused LUT; 3-bit doesn't align to byte boundaries)              */
+/*  3-bit scoring — fused byte-triplet approach                          */
+/*                                                                       */
+/*  Every 8 dims at 3 bits = 24 bits = exactly 3 bytes.                  */
+/*  For each triplet of bytes we precompute 3 × 256-entry tables:        */
+/*    fused3[triplet * 3 * 256 + byte_within_triplet * 256 + byte_value] */
+/*  Each table entry sums the LUT contributions for the dimensions       */
+/*  whose bits fall within that byte.                                    */
+/*                                                                       */
+/*  This reduces the inner loop from 8 LUT lookups per group to 3,       */
+/*  and uses the same cache-friendly column-sweep as 2/4-bit.            */
 /* ===================================================================== */
+
+/*
+ * Build fused byte-triplet LUT for 3-bit encoding.
+ *
+ * For a group of 8 dimensions packed into 3 bytes:
+ *   byte0: bits [0..7]  → dims 0(bits 0-2), 1(bits 3-5), 2(bits 6-7 low)
+ *   byte1: bits [8..15] → dim 2(bit 8 high), 3(bits 9-11), 4(bits 12-14), 5(bit 15 low)
+ *   byte2: bits [16..23]→ dim 5(bits 16-17 high), 6(bits 18-20), 7(bits 21-23)
+ *
+ * fused_out: (n_triplets × 3 × 256) array.
+ */
+void build_fused_3bit(
+    const double *lut,          /* (dim × 8) row-major */
+    double       *fused_out,    /* (n_triplets × 3 × 256) output */
+    int           dim)
+{
+    const int num_levels = 8;
+    const int n_groups = (dim + 7) / 8;
+
+    for (int g = 0; g < n_groups; g++) {
+        int base_d = g * 8;
+        double *fb0 = fused_out + (size_t)g * 3 * 256;
+        double *fb1 = fb0 + 256;
+        double *fb2 = fb1 + 256;
+
+        /* Precompute which dims are extractable from each byte */
+        for (int b = 0; b < 256; b++) {
+            double v0 = 0.0, v1 = 0.0, v2 = 0.0;
+
+            /* byte0: bit offsets 0,3,6 within the 24-bit group */
+            /* dim+0 at bits 0-2 */
+            if (base_d + 0 < dim)
+                v0 += lut[(base_d + 0) * num_levels + (b & 0x07)];
+            /* dim+1 at bits 3-5 */
+            if (base_d + 1 < dim)
+                v0 += lut[(base_d + 1) * num_levels + ((b >> 3) & 0x07)];
+            /* dim+2 at bits 6-7 (low 2 bits of 3) */
+            /* Need to combine with byte1 bit 0, can't fully resolve here.
+               Store partial: extract the 2 low bits shifted into position. */
+
+            /* byte1: */
+            /* dim+2 spans byte0[6:7] and byte1[0] — handled below */
+            /* dim+3 at bits 9-11 → byte1 bits 1-3 */
+            if (base_d + 3 < dim)
+                v1 += lut[(base_d + 3) * num_levels + ((b >> 1) & 0x07)];
+            /* dim+4 at bits 12-14 → byte1 bits 4-6 */
+            if (base_d + 4 < dim)
+                v1 += lut[(base_d + 4) * num_levels + ((b >> 4) & 0x07)];
+            /* dim+5 spans byte1[7] and byte2[0:1] — handled below */
+
+            /* byte2: */
+            /* dim+6 at bits 18-20 → byte2 bits 2-4 */
+            if (base_d + 6 < dim)
+                v2 += lut[(base_d + 6) * num_levels + ((b >> 2) & 0x07)];
+            /* dim+7 at bits 21-23 → byte2 bits 5-7 */
+            if (base_d + 7 < dim)
+                v2 += lut[(base_d + 7) * num_levels + ((b >> 5) & 0x07)];
+
+            fb0[b] = v0;
+            fb1[b] = v1;
+            fb2[b] = v2;
+        }
+    }
+}
 
 void score_lut_3bit(
     const uint8_t *packed_db,
@@ -152,37 +225,125 @@ void score_lut_3bit(
     int            bytes_per_vec)
 {
     const int num_levels = 8;
-    const int mask = 0x07;
-    int bit_offset = 0;
+    const int n_groups = (dim + 7) / 8;
 
-    for (int d = 0; d < dim; d++) {
-        int byte_idx = bit_offset >> 3;
-        int shift    = bit_offset & 7;
-        int spills   = (shift + 3 > 8) ? 1 : 0;
-        const double *lut_row = lut + d * num_levels;
+    /* Allocate fused triplet LUT + spanning-dim LUTs */
+    double *fused3 = (double *)malloc((size_t)n_groups * 3 * 256 * sizeof(double));
+    if (!fused3) {
+        /* Fallback: simple per-dim path */
+        const int mask = 0x07;
+        int bit_offset = 0;
+        for (int d = 0; d < dim; d++) {
+            int byte_idx = bit_offset >> 3;
+            int shift    = bit_offset & 7;
+            const double *lut_row = lut + d * num_levels;
+            if (shift + 3 <= 8) {
+                for (int v = 0; v < n_vectors; v++)
+                    scores_out[v] += lut_row[(packed_db[(size_t)v*bytes_per_vec + byte_idx] >> shift) & mask];
+            } else {
+                int rshift = 8 - shift;
+                for (int v = 0; v < n_vectors; v++) {
+                    const uint8_t *row = packed_db + (size_t)v * bytes_per_vec;
+                    scores_out[v] += lut_row[((row[byte_idx] >> shift) | (row[byte_idx+1] << rshift)) & mask];
+                }
+            }
+            bit_offset += 3;
+        }
+        return;
+    }
 
-        if (!spills) {
-            int v = 0;
-            int n4 = n_vectors & ~3;
-            for (; v < n4; v += 4) {
-                scores_out[v  ] += lut_row[(packed_db[(size_t)(v  )*bytes_per_vec + byte_idx] >> shift) & mask];
-                scores_out[v+1] += lut_row[(packed_db[(size_t)(v+1)*bytes_per_vec + byte_idx] >> shift) & mask];
-                scores_out[v+2] += lut_row[(packed_db[(size_t)(v+2)*bytes_per_vec + byte_idx] >> shift) & mask];
-                scores_out[v+3] += lut_row[(packed_db[(size_t)(v+3)*bytes_per_vec + byte_idx] >> shift) & mask];
-            }
-            for (; v < n_vectors; v++) {
-                scores_out[v] += lut_row[(packed_db[(size_t)v*bytes_per_vec + byte_idx] >> shift) & mask];
-            }
-        } else {
-            int rshift = 8 - shift;
-            for (int v = 0; v < n_vectors; v++) {
-                const uint8_t *row = packed_db + (size_t)v * bytes_per_vec;
-                int chunk = ((int)row[byte_idx] >> shift) | ((int)row[byte_idx + 1] << rshift);
-                scores_out[v] += lut_row[chunk & mask];
+    build_fused_3bit(lut, fused3, dim);
+
+    /*
+     * For each group of 8 dims, process 3 bytes with fused lookups
+     * plus 2 spanning dimensions (dim+2 and dim+5) that cross byte
+     * boundaries. The spanning dims are handled with direct extraction.
+     */
+    for (int g = 0; g < n_groups; g++) {
+        int base_d = g * 8;
+        int base_byte = g * 3;
+        const double *fb0 = fused3 + (size_t)g * 3 * 256;
+        const double *fb1 = fb0 + 256;
+        const double *fb2 = fb1 + 256;
+
+        /* Spanning dim pointers */
+        const double *lut_d2 = (base_d + 2 < dim) ? lut + (base_d + 2) * num_levels : NULL;
+        const double *lut_d5 = (base_d + 5 < dim) ? lut + (base_d + 5) * num_levels : NULL;
+
+        int v = 0;
+        int n4 = n_vectors & ~3;
+        for (; v < n4; v += 4) {
+            for (int vi = 0; vi < 4; vi++) {
+                const uint8_t *row = packed_db + (size_t)(v + vi) * bytes_per_vec + base_byte;
+                uint8_t b0 = row[0];
+                uint8_t b1 = row[1];
+                uint8_t b2 = row[2];
+                double s = fb0[b0] + fb1[b1] + fb2[b2];
+                /* dim+2: bits 6-8 → byte0[6:7] | byte1[0] */
+                if (lut_d2) s += lut_d2[((b0 >> 6) | (b1 << 2)) & 0x07];
+                /* dim+5: bits 15-17 → byte1[7] | byte2[0:1] */
+                if (lut_d5) s += lut_d5[((b1 >> 7) | (b2 << 1)) & 0x07];
+                scores_out[v + vi] += s;
             }
         }
+        for (; v < n_vectors; v++) {
+            const uint8_t *row = packed_db + (size_t)v * bytes_per_vec + base_byte;
+            uint8_t b0 = row[0];
+            uint8_t b1 = row[1];
+            uint8_t b2 = row[2];
+            double s = fb0[b0] + fb1[b1] + fb2[b2];
+            if (lut_d2) s += lut_d2[((b0 >> 6) | (b1 << 2)) & 0x07];
+            if (lut_d5) s += lut_d5[((b1 >> 7) | (b2 << 1)) & 0x07];
+            scores_out[v] += s;
+        }
+    }
 
-        bit_offset += 3;
+    free(fused3);
+}
+
+/* ===================================================================== */
+/*  Binary Sketch Scorer — XOR + POPCNT Hamming distance                 */
+/*  Used as a cheap pre-filter: scan all vectors, return Hamming          */
+/*  distances, then refine only the top candidates with full LUT.        */
+/* ===================================================================== */
+
+/*
+ * Compute Hamming distance between a query sketch and all database sketches.
+ * sketch_db: (n_vectors × sketch_bytes), row-major packed sign bits.
+ * sketch_q:  (sketch_bytes) query sketch.
+ * distances_out: (n_vectors) output, lower = more similar.
+ *
+ * Uses __builtin_popcountll for fast bit counting.
+ */
+void hamming_scan(
+    const uint8_t *sketch_db,
+    const uint8_t *sketch_q,
+    int32_t       *distances_out,
+    int            n_vectors,
+    int            sketch_bytes)
+{
+    /* Process in 8-byte (uint64) chunks for POPCNT efficiency */
+    int n_words = sketch_bytes / 8;
+    int tail_bytes = sketch_bytes % 8;
+
+    for (int v = 0; v < n_vectors; v++) {
+        const uint8_t *row = sketch_db + (size_t)v * sketch_bytes;
+        int32_t dist = 0;
+
+        /* Main loop: 8 bytes at a time */
+        for (int w = 0; w < n_words; w++) {
+            uint64_t db_word, q_word;
+            memcpy(&db_word, row + w * 8, 8);
+            memcpy(&q_word, sketch_q + w * 8, 8);
+            dist += __builtin_popcountll(db_word ^ q_word);
+        }
+
+        /* Tail bytes */
+        for (int b = n_words * 8; b < sketch_bytes; b++) {
+            dist += __builtin_popcount(row[b] ^ sketch_q[b]);
+        }
+
+        distances_out[v] = dist;
     }
 }
 
@@ -203,15 +364,19 @@ int score_lut_dispatch(
 
     if (bits == 4) {
         int n_bytes = (dim + 1) / 2;
-        double fused[n_bytes * 256];
+        double *fused = (double *)malloc((size_t)n_bytes * 256 * sizeof(double));
+        if (!fused) return -2;
         build_fused_4bit(lut, fused, dim);
         score_fused(packed_db, fused, scores_out, n_vectors, n_bytes, bytes_per_vec);
+        free(fused);
         return 0;
     } else if (bits == 2) {
         int n_bytes = (dim + 3) / 4;
-        double fused[n_bytes * 256];
+        double *fused = (double *)malloc((size_t)n_bytes * 256 * sizeof(double));
+        if (!fused) return -2;
         build_fused_2bit(lut, fused, dim);
         score_fused(packed_db, fused, scores_out, n_vectors, n_bytes, bytes_per_vec);
+        free(fused);
         return 0;
     } else if (bits == 3) {
         score_lut_3bit(packed_db, lut, scores_out, n_vectors, dim, bytes_per_vec);
@@ -235,5 +400,70 @@ int score_fused_dispatch(
 {
     memset(scores_out, 0, (size_t)n_vectors * sizeof(double));
     score_fused(packed_db, fused_lut, scores_out, n_vectors, n_bytes, bytes_per_vec);
+    return 0;
+}
+
+/* ===================================================================== */
+/*  3-bit scoring with PREBUILT fused table                              */
+/*                                                                       */
+/*  Identical logic to score_lut_3bit but accepts an externally built    */
+/*  fused 3-bit table so callers can reuse it across shard scans.        */
+/*  The original LUT is still needed for the two spanning dimensions     */
+/*  (dim+2 and dim+5 per group) that cross byte boundaries.             */
+/* ===================================================================== */
+
+int score_fused_3bit_dispatch(
+    const uint8_t *packed_db,
+    const double  *fused3,       /* (n_groups × 3 × 256) prebuilt fused table */
+    const double  *lut,          /* (dim × 8) original LUT for spanning dims */
+    double        *scores_out,
+    int            n_vectors,
+    int            dim,
+    int            bytes_per_vec)
+{
+    const int num_levels = 8;
+    const int n_groups = (dim + 7) / 8;
+
+    memset(scores_out, 0, (size_t)n_vectors * sizeof(double));
+
+    for (int g = 0; g < n_groups; g++) {
+        int base_d = g * 8;
+        int base_byte = g * 3;
+        const double *fb0 = fused3 + (size_t)g * 3 * 256;
+        const double *fb1 = fb0 + 256;
+        const double *fb2 = fb1 + 256;
+
+        /* Spanning dim pointers */
+        const double *lut_d2 = (base_d + 2 < dim) ? lut + (base_d + 2) * num_levels : NULL;
+        const double *lut_d5 = (base_d + 5 < dim) ? lut + (base_d + 5) * num_levels : NULL;
+
+        int v = 0;
+        int n4 = n_vectors & ~3;
+        for (; v < n4; v += 4) {
+            for (int vi = 0; vi < 4; vi++) {
+                const uint8_t *row = packed_db + (size_t)(v + vi) * bytes_per_vec + base_byte;
+                uint8_t b0 = row[0];
+                uint8_t b1 = row[1];
+                uint8_t b2 = row[2];
+                double s = fb0[b0] + fb1[b1] + fb2[b2];
+                /* dim+2: bits 6-8 → byte0[6:7] | byte1[0] */
+                if (lut_d2) s += lut_d2[((b0 >> 6) | (b1 << 2)) & 0x07];
+                /* dim+5: bits 15-17 → byte1[7] | byte2[0:1] */
+                if (lut_d5) s += lut_d5[((b1 >> 7) | (b2 << 1)) & 0x07];
+                scores_out[v + vi] += s;
+            }
+        }
+        for (; v < n_vectors; v++) {
+            const uint8_t *row = packed_db + (size_t)v * bytes_per_vec + base_byte;
+            uint8_t b0 = row[0];
+            uint8_t b1 = row[1];
+            uint8_t b2 = row[2];
+            double s = fb0[b0] + fb1[b1] + fb2[b2];
+            if (lut_d2) s += lut_d2[((b0 >> 6) | (b1 << 2)) & 0x07];
+            if (lut_d5) s += lut_d5[((b1 >> 7) | (b2 << 1)) & 0x07];
+            scores_out[v] += s;
+        }
+    }
+
     return 0;
 }

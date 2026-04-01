@@ -200,6 +200,7 @@ class BenchmarkComparison:
 class TurboIndexBackend:
     index: TurboIndex
     label: str = "turborag"
+    mode: str = "auto"
 
     @property
     def index_size(self) -> int:
@@ -210,7 +211,7 @@ class TurboIndexBackend:
         return self.index.bits
 
     def search(self, query: FloatVector, k: int) -> list[tuple[str, float]]:
-        return self.index.search(query, k=k)
+        return self.index.search(query, k=k, mode=self.mode)
 
 
 @dataclass(slots=True)

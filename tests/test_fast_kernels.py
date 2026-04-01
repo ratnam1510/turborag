@@ -11,7 +11,11 @@ from turborag.compress import (
     normalize_rows,
     quantize_qjl,
 )
-from turborag.fast_kernels import build_query_lut, score_shard_lut
+from turborag.fast_kernels import (
+    build_query_lut,
+    score_shard_lut,
+    score_shard_lut_batch,
+)
 
 
 class TestLUTCorrectnessVsNaive:
@@ -241,4 +245,6 @@ class TestLUTPerformanceRegression:
         assert len(results) == 10
         # Self-match should be top-1
         assert results[0][0] == "doc-0"
+
+
 

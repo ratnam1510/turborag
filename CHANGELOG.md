@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 - 2026-03-30
+
+### Performance
+
+- Rewrote the 3-bit C scoring kernel with a **fused byte-triplet approach**: processes 3 bytes (8 dims) at a time with precomputed per-byte LUTs instead of per-dimension extraction.
+- Result: **4.4x speedup** on large-scale benchmark (15 → 65 QPS at 100K×384 3-bit).
+- Avoided redundant `np.ascontiguousarray` copies in ctypes wrapper when arrays are already contiguous.
+
+### Production Hardening
+
+- **Atomic save/load**: `save()` now clears stale shard files before writing, preventing deleted vectors from reappearing.
+- **C scorer**: replaced VLAs with heap allocation to prevent stack overflow on large dims; added input shape validation in the ctypes wrapper.
+- Removed `allow_pickle=True` from NPZ loading (security fix).
+- Renamed `IndexError` to `IndexOperationError` to stop shadowing the Python builtin.
+- **HTTP service**: added `threading.Lock` around ingest mutations for concurrency safety; all handlers now catch `TurboRAGError`.
+- `TurboIndex.open()` skips expensive rotation generation since `load()` overwrites it immediately.
+- `add()` now processes vectors in shard-sized chunks to avoid memory spikes on large batches.
+
+### Bug Fixes
+
+- Fixed C kernel stack overflow risk on high-dimensional vectors by switching from VLAs to heap allocation.
+- Fixed potential stale shard data after deletions by making `save()` atomic.
+- Fixed `IndexError` name collision with Python builtin.
+
 ## 0.2.0 - 2026-03-30
 
 Production-grade overhaul targeting performance, hardening, and feature completeness.
