@@ -4,19 +4,51 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turborag"
-version = "0.1.0"
-description = "Compressed vector and graph-augmented retrieval primitives inspired by the TurboRAG specification."
+version = "0.4.0"
+description = "Compressed vector and graph-augmented retrieval engine with adaptive two-stage search, implementing TurboQuant/QJL quantization from Google Research."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [
   { name = "Ratnam Shah" }
 ]
+keywords = [
+  "rag",
+  "retrieval",
+  "vector-search",
+  "quantization",
+  "compressed-vectors",
+  "turboquant",
+  "similarity-search",
+  "embeddings",
+  "llm",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Database :: Database Engines/Servers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: C",
+  "Operating System :: OS Independent",
+  "Typing :: Typed",
+]
 dependencies = [
   "click>=8.0",
   "numpy>=1.24",
   "scipy>=1.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ratnam1510/turborag"
+Repository = "https://github.com/ratnam1510/turborag"
+Documentation = "https://github.com/ratnam1510/turborag/tree/main/docs"
+Issues = "https://github.com/ratnam1510/turborag/issues"
+Changelog = "https://github.com/ratnam1510/turborag/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 embed = [
@@ -62,6 +94,9 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+turborag = ["_cscore.c", "py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
