@@ -244,6 +244,28 @@ npm test
 TURBORAG_INTEGRATION_TEST=1 npm run test:integration
 ```
 
+## Benchmarks
+
+Performance tested on 1000 vectors with 384 dimensions and 4-bit quantization:
+
+| Metric | Node.js SDK | Python SDK |
+|--------|-------------|------------|
+| Single Query QPS | 1,111 | 5,999 |
+| Batch Query QPS | 3,571 | N/A |
+| Avg Latency (single) | 0.90ms | 0.17ms |
+| Avg Latency (batch) | 0.28ms | N/A |
+| Ingest Rate | 3,226 rec/s | N/A |
+| Recall@10 | 100% | 100% |
+| MRR | 1.0 | 1.0 |
+
+The Python SDK achieves higher raw QPS due to direct native bindings, while the Node.js SDK provides excellent performance through the HTTP API with sub-millisecond latencies.
+
+Run benchmarks:
+
+```bash
+node run-benchmark.js
+```
+
 ## License
 
 MIT
