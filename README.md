@@ -45,6 +45,7 @@ TurboRAG `auto` mode selects the best strategy per query: `exact` for small inde
 - **Benchmark suite**: Side-by-side comparison against exact float and FAISS backends
 - **CLI**: Full command-line interface for import, query, benchmark, serve, and MCP modes
 - **Docker**: Production-ready multi-stage Dockerfile with pre-compiled C kernel
+- **Node.js SDK**: Full-featured client for JavaScript/TypeScript applications
 
 ## Package Layout
 
@@ -68,6 +69,15 @@ src/turborag/
   mcp_server.py        # MCP stdio server (query, describe, ingest tools)
   service.py           # Starlette HTTP service with CORS, metrics, batch
   types.py             # ChunkRecord, RetrievalResult dataclasses
+nodejs/                # Node.js SDK
+  src/
+    index.js           # Main entry point
+    index.d.ts         # TypeScript declarations
+    client.js          # TurboRAGClient class
+    validators.js      # Input validation
+    errors.js          # Error hierarchy
+  tests/               # 76+ tests
+  README.md            # Node.js documentation
 tests/                 # 104+ tests
 Dockerfile             # Multi-stage production build
 ```
@@ -110,6 +120,44 @@ pip install -e '.[all,dev]'
 ```
 
 Individual extras: `graph`, `embed`, `ingest`, `serve`, `mcp`, `all`, `dev`. See [docs/installation.md](docs/installation.md) for details.
+
+## Node.js SDK
+
+For Node.js/TypeScript applications, use the official SDK:
+
+```bash
+cd nodejs
+npm install
+```
+
+```javascript
+const { createClient } = require('turborag');
+
+const client = createClient({
+    baseUrl: 'http://localhost:8080',
+    timeout: 30000
+});
+
+const results = await client.queryByVector([0.1, 0.2, 0.3, ...], 10);
+console.log(results);
+
+await client.ingest([{
+    chunk_id: 'doc-1',
+    text: 'Document content',
+    embedding: [0.1, 0.2, 0.3, ...]
+}]);
+```
+
+Or use environment variables:
+
+```javascript
+const { createClientFromEnv } = require('turborag');
+
+process.env.TURBORAG_API_URL = 'http://localhost:8080';
+const client = createClientFromEnv();
+```
+
+Full documentation: [nodejs/README.md](nodejs/README.md)
 
 ## Run As A Service
 
@@ -195,6 +243,7 @@ pytest
 - [Import Existing Data](docs/import-existing.md)
 - [LLM Request Model](docs/llm-request-model.md)
 - [Service API](docs/service.md)
+- [Node.js SDK](nodejs/README.md)
 - [Spec Status](docs/spec-status.md)
 - [Spec Decisions](docs/spec-decisions.md)
 - [Change Log](CHANGELOG.md)

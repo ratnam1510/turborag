@@ -1,0 +1,32 @@
+{
+  "name": "turborag",
+  "version": "1.0.0",
+  "description": "Node.js SDK for TurboRAG - compressed vector retrieval engine",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:integration": "node --test tests/integration.test.js",
+    "lint": "eslint src tests"
+  },
+  "keywords": [
+    "rag",
+    "vector",
+    "search",
+    "retrieval",
+    "embeddings",
+    "turborag"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}
