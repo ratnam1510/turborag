@@ -241,6 +241,9 @@ function Header() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Hero() {
+  const [installTab, setInstallTab] = useState<'pip' | 'npm'>('pip')
+  const installCommand = installTab === 'pip' ? 'pip install turborag' : 'npm install turborag'
+  
   return (
     <section className="hero">
       <Container>
@@ -268,12 +271,25 @@ function Hero() {
                     <span className="hero__install-traffic-light hero__install-traffic-light--yellow" />
                     <span className="hero__install-traffic-light hero__install-traffic-light--green" />
                   </div>
-                  <span className="hero__install-title">Terminal</span>
+                  <div className="hero__install-tabs">
+                    <button 
+                      className={`hero__install-tab ${installTab === 'pip' ? 'hero__install-tab--active' : ''}`}
+                      onClick={() => setInstallTab('pip')}
+                    >
+                      pip
+                    </button>
+                    <button 
+                      className={`hero__install-tab ${installTab === 'npm' ? 'hero__install-tab--active' : ''}`}
+                      onClick={() => setInstallTab('npm')}
+                    >
+                      npm
+                    </button>
+                  </div>
                 </div>
                 <div className="hero__install-content">
                   <span className="hero__install-prompt">$</span>
-                  <code>pip install turborag</code>
-                  <CopyButton text="pip install turborag" className="hero__install-copy" />
+                  <code>{installCommand}</code>
+                  <CopyButton text={installCommand} className="hero__install-copy" />
                 </div>
               </div>
             </div>
