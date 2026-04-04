@@ -70,6 +70,13 @@ serve = [
 mcp = [
   "mcp>=1.0",
 ]
+adapters = [
+  "psycopg>=3.1",
+  "supabase>=2.0",
+  "pinecone>=5.0",
+  "qdrant-client>=1.9",
+  "chromadb>=0.5",
+]
 all = [
   "sentence-transformers>=2.5",
   "networkx>=3.0",
@@ -80,6 +87,11 @@ all = [
   "starlette>=0.37",
   "uvicorn>=0.27",
   "mcp>=1.0",
+  "psycopg>=3.1",
+  "supabase>=2.0",
+  "pinecone>=5.0",
+  "qdrant-client>=1.9",
+  "chromadb>=0.5",
 ]
 
 dev = [

@@ -25,11 +25,15 @@ The original local reference PDF (`TurboRAG Specification - Understanding Google
 - `GraphBuilder` with structured extraction prompts, SQLite caching, Leiden community detection, **graph persistence** (save/load to GraphML + JSON).
 - `HybridRetriever` for dense plus graph retrieval with entity detection, BFS expansion, and result explanations.
 - Compatibility adapters for sidecar adoption in existing RAG stacks.
+- Direct existing-backend bridge (`from_existing_backend` / `resolve_records_backend`) for running TurboRAG on top of current DB clients.
+- Known backend builders for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- Plug-and-play adapter config + CLI flow for known backends (`turborag adapt`).
 - Existing-embedding import flow, local record snapshots, and CLI sidecar commands.
 - **Token-aware document chunking** (`chunker.py`) for PDF, markdown, and plain text with tiktoken integration.
 - Benchmark harness with side-by-side comparison against exact float and FAISS backends.
 - Reproducible synthetic benchmark fixtures and artifact scripts.
 - **Production HTTP service** with CORS, `/metrics` endpoint, request ID tracking, batch queries, and raw text ingestion.
+- ID-only retrieval mode (`hydrate=false`) and startup snapshot bypass for lower memory sidecar operation.
 - **MCP server** with query, describe, and ingest tools.
 - **Domain-specific exception hierarchy** (`exceptions.py`).
 - **CLI** with global `--log-level`/`--log-format`, `--workers` for serve, progress bars for imports.

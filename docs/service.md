@@ -34,6 +34,37 @@ turborag serve \
   --cors-origins "http://localhost:3000,https://app.example.com"
 ```
 
+Low-memory sidecar mode (no local snapshot hydration):
+
+```bash
+turborag serve \
+  --index ./turborag_sidecar \
+  --no-load-snapshot
+```
+
+Plug-and-play backend mode using adapter config:
+
+```bash
+turborag serve \
+  --index ./turborag_sidecar \
+  --adapter-config ./turborag_sidecar/adapter.json
+```
+
+Simpler setup (recommended): generate `adapter.json` first and then serve normally:
+
+```bash
+turborag adapt --index ./turborag_sidecar
+turborag serve --index ./turborag_sidecar
+```
+
+If you want strict hydration (drop any hit that cannot be hydrated):
+
+```bash
+turborag serve \
+  --index ./turborag_sidecar \
+  --require-hydrated
+```
+
 ## Endpoints
 
 ### `GET /health`
@@ -50,7 +81,11 @@ Returns a minimal readiness payload:
 
 ### `GET /index`
 
-Returns the sidecar configuration and whether local text queries are enabled.
+Returns the sidecar configuration and hydration mode details:
+
+- `hydration_source`: `local_snapshot`, `external_backend`, `hybrid`, or `id_only`
+- `allow_unhydrated`: whether unresolved hits are returned as ID-only results
+- `text_query_enabled`: whether `query_text` is enabled
 
 ### `GET /metrics`
 
@@ -76,6 +111,10 @@ Returns latency histograms and error counts:
 
 Accepts exactly one of `query_vector` or `query_text`.
 
+Optional field:
+
+- `hydrate` (boolean, default `true`) — when `false`, returns ID-only results and skips hydration.
+
 Vector query:
 
 ```bash
@@ -90,6 +129,14 @@ Text query (requires `--model`):
 curl -X POST http://localhost:8080/query \
   -H 'content-type: application/json' \
   -d '{"query_text":"What changed in capex guidance?","top_k":5}'
+```
+
+Vector query with ID-only response:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
 ```
 
 Response:
@@ -126,6 +173,8 @@ curl -X POST http://localhost:8080/query/batch \
     "top_k": 5
   }'
 ```
+
+`/query/batch` also supports `"hydrate": false` for compact ID-only batches.
 
 Response:
 

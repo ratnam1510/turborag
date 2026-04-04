@@ -44,6 +44,7 @@ TurboRAG `auto` mode selects the best strategy per query: `exact` for small inde
 - **MCP server**: Tool-based agent integration over stdio (query, describe, ingest)
 - **Benchmark suite**: Side-by-side comparison against exact float and FAISS backends
 - **CLI**: Full command-line interface for import, query, benchmark, serve, and MCP modes
+- **Client SDKs**: TypeScript/Node.js, Go, and Ruby clients for language-agnostic HTTP integration
 - **Docker**: Production-ready multi-stage Dockerfile with pre-compiled C kernel
 
 ## Package Layout
@@ -175,6 +176,80 @@ TurboRAG runs as a retrieval sidecar alongside your existing RAG database:
 
 Full guide: [docs/current-rag-rollout.md](docs/current-rag-rollout.md).
 
+### Existing DB Integration (ID-Only, Low Memory)
+
+If you already have text and metadata in your own database, TurboRAG can return
+ranked IDs only and skip local hydration entirely.
+
+- Python adapter: build from embeddings and pass your existing backend client.
+- HTTP service: use `POST /query` with `"hydrate": false`.
+- CLI: use `turborag query --ids-only`.
+
+This mode minimizes memory and keeps TurboRAG as a pure retrieval sidecar.
+
+```python
+from turborag.adapters.compat import ExistingRAGAdapter
+
+adapter = ExistingRAGAdapter.from_existing_backend(
+    embeddings=embeddings_matrix,
+    ids=chunk_ids,
+    query_embedder=embedder,
+    records_backend=your_existing_db_client,
+    bits=3,
+)
+
+hits = adapter.search_ids("What changed in capex guidance?", k=5)
+# Hydrate hits from your own DB path.
+```
+
+Known backend helper builders are available in `turborag.adapters.backends`:
+
+- Postgres / Neon / Supabase Postgres: `build_postgres_fetch_records(...)` / `build_neon_fetch_records(...)`
+- Supabase Python client: `build_supabase_fetch_records(...)`
+- Pinecone: `build_pinecone_fetch_records(...)`
+- Qdrant: `build_qdrant_fetch_records(...)`
+- Chroma: `build_chroma_fetch_records(...)`
+
+Or configure plug-and-play adapter mode via CLI:
+
+```bash
+turborag adapt set neon --index ./turborag_sidecar --option dsn=${DATABASE_URL}
+turborag serve --index ./turborag_sidecar
+```
+
+Shortcut command style (env-aware):
+
+```bash
+turborag adapt supabase --index ./turborag_sidecar
+turborag serve --index ./turborag_sidecar
+```
+
+Automatic mode (detect backend from env):
+
+```bash
+turborag adapt --index ./turborag_sidecar
+```
+
+If you're in the index directory already:
+
+```bash
+turborag adapt
+```
+
+Need a quick starter command for a backend?
+
+```bash
+turborag adapt demo supabase
+```
+
+```bash
+turborag serve --index ./turborag_sidecar --no-load-snapshot
+
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
+```
+
 ## Verification
 
 ```bash
@@ -195,6 +270,7 @@ pytest
 - [Import Existing Data](docs/import-existing.md)
 - [LLM Request Model](docs/llm-request-model.md)
 - [Service API](docs/service.md)
+- [Client SDKs](clients/) (TypeScript, Go, Ruby)
 - [Spec Status](docs/spec-status.md)
 - [Spec Decisions](docs/spec-decisions.md)
 - [Change Log](CHANGELOG.md)

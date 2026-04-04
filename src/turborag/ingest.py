@@ -8,7 +8,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from .adapters.compat import ExistingRAGAdapter, coerce_chunk_record
+from .adapters.compat import (
+    ExistingRAGAdapter,
+    coerce_chunk_record,
+    resolve_records_backend,
+)
+from .adapters.config import build_fetch_records_from_config, maybe_load_adapter_config
 from .index import TurboIndex
 from .types import ChunkRecord
 
@@ -183,7 +188,9 @@ def load_records_snapshot(path: str | Path) -> dict[str, ChunkRecord]:
 
 def snapshot_fetch_records(snapshot_path: str | Path) -> FetchRecords:
     record_store = load_records_snapshot(snapshot_path)
-    return lambda ids: [record_store[chunk_id] for chunk_id in ids if chunk_id in record_store]
+    return lambda ids: [
+        record_store[chunk_id] for chunk_id in ids if chunk_id in record_store
+    ]
 
 
 def open_sidecar_adapter(
@@ -191,22 +198,38 @@ def open_sidecar_adapter(
     *,
     query_embedder: Any | None = None,
     fetch_records: FetchRecords | None = None,
+    records_backend: Any | None = None,
+    adapter_config: str | Path | None = None,
+    allow_unhydrated: bool = True,
 ) -> ExistingRAGAdapter:
     index_dir = Path(index_path)
     index = TurboIndex.open(str(index_dir))
 
     resolver = fetch_records
+    if records_backend is not None:
+        resolver = resolve_records_backend(records_backend)
+
+    if resolver is None:
+        adapter_cfg, _ = maybe_load_adapter_config(index_dir, adapter_config)
+        if adapter_cfg is not None:
+            resolver = build_fetch_records_from_config(adapter_cfg)
+
     if resolver is None:
         snapshot_path = index_dir / SNAPSHOT_FILE_NAME
         if snapshot_path.exists():
             resolver = snapshot_fetch_records(snapshot_path)
         else:
             raise FileNotFoundError(
-                f"No record snapshot found at {snapshot_path}. Provide fetch_records explicitly."
+                f"No record snapshot found at {snapshot_path}. Provide fetch_records, records_backend, or adapter_config explicitly."
             )
 
     embedder = query_embedder if query_embedder is not None else _MissingQueryEmbedder()
-    return ExistingRAGAdapter(index=index, query_embedder=embedder, fetch_records=resolver)
+    return ExistingRAGAdapter(
+        index=index,
+        query_embedder=embedder,
+        fetch_records=resolver,
+        allow_unhydrated=allow_unhydrated,
+    )
 
 
 class _MissingQueryEmbedder:

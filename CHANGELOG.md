@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- Added `ExistingRAGAdapter.from_existing_backend(...)` plus `resolve_records_backend(...)` so TurboRAG can attach directly on top of existing database/client integrations without schema migration.
+- Expanded compatibility hydration to accept common backend payload shapes (`fetch/retrieve/get`, mapping stores, record/match/point responses, and nested metadata payloads).
+- Added optional ID-only retrieval mode in the HTTP service via `hydrate=false` for `POST /query` and `POST /query/batch`.
+- Added low-memory serving flags to CLI:
+  - `--no-load-snapshot` skips loading `records.jsonl` into memory at startup.
+  - `--require-hydrated` drops hits that cannot be hydrated.
+- Added low-memory CLI query mode with `turborag query --ids-only`.
+- Added known backend helper builders in `turborag.adapters.backends` for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- Added plug-and-play adapter config + CLI workflow:
+  - `turborag adapt` auto mode (env-based backend detection)
+  - `turborag adapt set ...`
+  - `turborag adapt supabase|neon|pinecone|qdrant|chroma ...`
+  - `turborag adapt show`
+  - `turborag adapt remove`
+  - `turborag adapt demo <backend>`
+  - `turborag serve --adapter-config ...`
+- Added TypeScript client support for ID-only query flows:
+  - `query({ ..., hydrate })`
+  - `queryBatch({ ..., hydrate })`
+  - `queryIds(...)`
+  - `queryBatchIds(...)`
+
+### Tests
+
+- Added adapter, ingest, service, and CLI tests covering:
+  - external backend hydration,
+  - unhydrated ID-only results,
+  - service low-memory startup flags,
+  - TypeScript client hydration toggles and ID-only helpers.
+
+### Documentation
+
+- Updated README and adoption/service/import/architecture/rollout docs with explicit "run on top of existing DB" guidance and low-memory/ID-only retrieval paths.
+
 ## 0.4.0 - 2026-04-01
 
 ### New Features

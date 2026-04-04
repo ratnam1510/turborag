@@ -1,6 +1,6 @@
 import numpy as np
 
-from turborag.adapters.compat import ExistingRAGAdapter
+from turborag.adapters.compat import ExistingRAGAdapter, resolve_records_backend
 from turborag.adapters.langchain import TurboVectorStore
 from turborag.types import ChunkRecord
 
@@ -41,13 +41,17 @@ def test_existing_rag_adapter_uses_external_record_store():
         "c": ChunkRecord(chunk_id="c", text="finance banana"),
     }
     ids = list(records)
-    embeddings = np.vstack([embedder.embed_query(records[chunk_id].text) for chunk_id in ids])
+    embeddings = np.vstack(
+        [embedder.embed_query(records[chunk_id].text) for chunk_id in ids]
+    )
 
     adapter = ExistingRAGAdapter.from_embeddings(
         embeddings=embeddings,
         ids=ids,
         query_embedder=embedder,
-        fetch_records=lambda requested_ids: [records[chunk_id] for chunk_id in requested_ids if chunk_id in records],
+        fetch_records=lambda requested_ids: [
+            records[chunk_id] for chunk_id in requested_ids if chunk_id in records
+        ],
         bits=4,
     )
 
@@ -84,3 +88,59 @@ def test_turbo_vector_store_can_add_texts_in_managed_mode():
     store.add_texts(["apple apple apple"], ids=["a"])
     hits = store.similarity_search("apple", k=1)
     assert _record_id(hits[0]) == "a"
+
+
+def test_existing_rag_adapter_can_return_id_only_hits_when_unhydrated_allowed():
+    embedder = FakeEmbeddings()
+    ids = ["a", "b"]
+    embeddings = np.vstack(
+        [
+            embedder.embed_query("apple apple finance"),
+            embedder.embed_query("banana banana"),
+        ]
+    )
+
+    adapter = ExistingRAGAdapter.from_embeddings(
+        embeddings=embeddings,
+        ids=ids,
+        query_embedder=embedder,
+        fetch_records=lambda requested_ids: [],
+        bits=4,
+        allow_unhydrated=True,
+    )
+
+    results = adapter.query("apple", k=1)
+    assert len(results) == 1
+    assert results[0].chunk_id == "a"
+    assert results[0].text == ""
+
+
+def test_resolve_records_backend_supports_mapping_and_get_style_client():
+    store = {
+        "a": {
+            "chunk_id": "a",
+            "text": "alpha",
+            "source_doc": "doc-a",
+            "metadata": {"x": 1},
+        }
+    }
+
+    fetch_from_mapping = resolve_records_backend(store)
+    mapping_rows = fetch_from_mapping(["a", "missing"])
+    assert len(mapping_rows) == 1
+    assert mapping_rows[0]["chunk_id"] == "a"
+
+    class FakeGetClient:
+        def get(self, ids):
+            return {
+                "ids": [ids],
+                "documents": [["alpha"]],
+                "metadatas": [[{"source_doc": "doc-a", "section": "s1"}]],
+            }
+
+    fetch_from_client = resolve_records_backend(FakeGetClient())
+    client_rows = fetch_from_client(["a"])
+    assert len(client_rows) == 1
+    assert client_rows[0]["chunk_id"] == "a"
+    assert client_rows[0]["text"] == "alpha"
+    assert client_rows[0]["source_doc"] == "doc-a"

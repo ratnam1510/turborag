@@ -100,6 +100,12 @@ This is the easiest operational model when the team does not want TurboRAG insid
 
 1. Export current embeddings and chunk IDs.
 2. Build a TurboRAG sidecar index.
+3. Configure adapter binding from environment (optional, but recommended for external DB hydration):
+
+```bash
+turborag adapt --index ./turborag_sidecar
+```
+
 3. Start the TurboRAG service with that index.
 
 ### Runtime query flow
@@ -118,12 +124,28 @@ This is the easiest operational model when the team does not want TurboRAG insid
 turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080
 ```
 
+If you already configured adapter auto mode, this uses `adapter.json` automatically.
+
+Memory-minimal startup (no snapshot hydration load):
+
+```bash
+turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080 --no-load-snapshot
+```
+
 ### Query example
 
 ```bash
 curl -X POST http://localhost:8080/query \
   -H 'content-type: application/json' \
   -d '{"query_vector":[0.1,0.2,0.3],"top_k":5}'
+```
+
+ID-only response path (hydrate in your existing DB):
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
 ```
 
 ## What The Team Actually Does In Order

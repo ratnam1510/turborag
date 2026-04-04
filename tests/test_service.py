@@ -5,6 +5,7 @@ import json
 import pytest
 
 from click.testing import CliRunner
+
 pytest.importorskip("starlette")
 from starlette.testclient import TestClient
 
@@ -32,7 +33,9 @@ def _build_index(tmp_path):
         {"chunk_id": "b", "text": "banana inventory", "embedding": [0.0, 2.0, 0.0]},
         {"chunk_id": "c", "text": "finance banana", "embedding": [0.0, 1.0, 1.0]},
     ]
-    dataset_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    dataset_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
     dataset = load_dataset(dataset_path)
     return build_sidecar_index(dataset, tmp_path / "index", bits=4)
 
@@ -40,6 +43,7 @@ def _build_index(tmp_path):
 # ---------------------------------------------------------------------------
 #  Core API tests
 # ---------------------------------------------------------------------------
+
 
 def test_service_exposes_index_query_and_ingest(tmp_path):
     _build_index(tmp_path)
@@ -56,7 +60,9 @@ def test_service_exposes_index_query_and_ingest(tmp_path):
     assert describe.json()["index_size"] == 3
     assert describe.json()["text_query_enabled"] is True
 
-    vector_query = client.post("/query", json={"query_vector": [2.0, 0.0, 1.0], "top_k": 2})
+    vector_query = client.post(
+        "/query", json={"query_vector": [2.0, 0.0, 1.0], "top_k": 2}
+    )
     assert vector_query.status_code == 200
     payload = vector_query.json()
     assert [item["chunk_id"] for item in payload["results"]] == ["a", "c"]
@@ -83,7 +89,9 @@ def test_service_exposes_index_query_and_ingest(tmp_path):
     assert ingest_response.status_code == 200
     assert ingest_response.json()["index_size"] == 4
 
-    updated_query = client.post("/query", json={"query_vector": [3.0, 0.0, 1.0], "top_k": 1})
+    updated_query = client.post(
+        "/query", json={"query_vector": [3.0, 0.0, 1.0], "top_k": 1}
+    )
     assert updated_query.status_code == 200
     assert updated_query.json()["results"][0]["chunk_id"] == "d"
 
@@ -95,7 +103,9 @@ def test_service_rejects_ambiguous_query_payload(tmp_path):
     _build_index(tmp_path)
     client = TestClient(create_app(tmp_path / "index"))
 
-    response = client.post("/query", json={"query_text": "apple", "query_vector": [1.0, 0.0, 0.0]})
+    response = client.post(
+        "/query", json={"query_text": "apple", "query_vector": [1.0, 0.0, 0.0]}
+    )
     assert response.status_code == 400
     assert "exactly one" in response.json()["detail"].lower()
 
@@ -113,9 +123,12 @@ def test_service_rejects_text_queries_without_embedder(tmp_path):
 #  CORS tests
 # ---------------------------------------------------------------------------
 
+
 def test_cors_headers_present(tmp_path):
     _build_index(tmp_path)
-    client = TestClient(create_app(tmp_path / "index", cors_origins=["http://example.com"]))
+    client = TestClient(
+        create_app(tmp_path / "index", cors_origins=["http://example.com"])
+    )
 
     response = client.options(
         "/query",
@@ -139,6 +152,7 @@ def test_cors_wildcard_default(tmp_path):
 #  Metrics endpoint
 # ---------------------------------------------------------------------------
 
+
 def test_metrics_endpoint(tmp_path):
     _build_index(tmp_path)
     client = TestClient(create_app(tmp_path / "index"))
@@ -158,6 +172,7 @@ def test_metrics_endpoint(tmp_path):
 # ---------------------------------------------------------------------------
 #  Batch query endpoint
 # ---------------------------------------------------------------------------
+
 
 def test_batch_query(tmp_path):
     _build_index(tmp_path)
@@ -187,9 +202,89 @@ def test_batch_query_rejects_empty(tmp_path):
     assert response.status_code == 400
 
 
+def test_query_allows_unhydrated_id_only_response(tmp_path):
+    _build_index(tmp_path)
+    app = create_app(tmp_path / "index", load_snapshot=False, allow_unhydrated=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/query",
+        json={
+            "query_vector": [2.0, 0.0, 1.0],
+            "top_k": 1,
+            "hydrate": False,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["results"][0]["chunk_id"] == "a"
+    assert payload["results"][0]["text"] == ""
+
+
+def test_service_uses_external_records_backend(tmp_path):
+    _build_index(tmp_path)
+
+    class ExternalBackend:
+        def get(self, ids):
+            docs = []
+            metas = []
+            for chunk_id in ids:
+                docs.append(f"external-{chunk_id}")
+                metas.append({"source_doc": "external-db", "section": "records"})
+            return {"ids": [ids], "documents": [docs], "metadatas": [metas]}
+
+    app = create_app(
+        tmp_path / "index",
+        load_snapshot=False,
+        records_backend=ExternalBackend(),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/query",
+        json={
+            "query_vector": [2.0, 0.0, 1.0],
+            "top_k": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["chunk_id"] == "a"
+    assert payload["results"][0]["text"] == "external-a"
+    assert payload["results"][0]["source_doc"] == "external-db"
+
+    describe = client.get("/index")
+    assert describe.status_code == 200
+    assert describe.json()["hydration_source"] == "external_backend"
+
+
+def test_query_batch_allows_unhydrated_flag(tmp_path):
+    _build_index(tmp_path)
+    app = create_app(tmp_path / "index", load_snapshot=False, allow_unhydrated=True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/query/batch",
+        json={
+            "queries": [
+                {"query_vector": [2.0, 0.0, 1.0]},
+                {"query_vector": [0.0, 2.0, 0.0]},
+            ],
+            "top_k": 1,
+            "hydrate": False,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["batch_count"] == 2
+    assert payload["results"][0]["results"][0]["text"] == ""
+
+
 # ---------------------------------------------------------------------------
 #  Request ID tracking
 # ---------------------------------------------------------------------------
+
 
 def test_request_id_logging(tmp_path):
     _build_index(tmp_path)
@@ -208,11 +303,14 @@ def test_request_id_logging(tmp_path):
 #  Error handling
 # ---------------------------------------------------------------------------
 
+
 def test_invalid_json_body(tmp_path):
     _build_index(tmp_path)
     client = TestClient(create_app(tmp_path / "index"))
 
-    response = client.post("/query", content=b"not json", headers={"content-type": "application/json"})
+    response = client.post(
+        "/query", content=b"not json", headers={"content-type": "application/json"}
+    )
     assert response.status_code == 400
     assert "invalid json" in response.json()["detail"].lower()
 
@@ -229,6 +327,7 @@ def test_unknown_query_fields_rejected(tmp_path):
 # ---------------------------------------------------------------------------
 #  CLI serve command
 # ---------------------------------------------------------------------------
+
 
 def test_serve_command_invokes_uvicorn(monkeypatch, tmp_path):
     _build_index(tmp_path)
@@ -247,7 +346,15 @@ def test_serve_command_invokes_uvicorn(monkeypatch, tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["serve", "--index", str(tmp_path / "index"), "--host", "0.0.0.0", "--port", "9090"],
+        [
+            "serve",
+            "--index",
+            str(tmp_path / "index"),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9090",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -265,6 +372,7 @@ def test_serve_workers_option(monkeypatch, tmp_path):
         captured.update(kwargs)
 
     import uvicorn
+
     monkeypatch.setattr(uvicorn, "run", fake_run)
 
     runner = CliRunner()
@@ -274,3 +382,134 @@ def test_serve_workers_option(monkeypatch, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert captured.get("workers") == 4
+
+
+def test_serve_supports_memory_flags(monkeypatch, tmp_path):
+    _build_index(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, **kwargs):
+        captured["app"] = app
+        captured.update(kwargs)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "serve",
+            "--index",
+            str(tmp_path / "index"),
+            "--no-load-snapshot",
+            "--require-hydrated",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured.get("host") == "127.0.0.1"
+    assert captured.get("port") == 8080
+    app = captured["app"]
+    assert app.state.turborag.allow_unhydrated is False
+    assert app.state.turborag.records == {}
+
+
+def test_serve_adapter_config_requires_env_value(monkeypatch, tmp_path):
+    _build_index(tmp_path)
+
+    adapter_config = tmp_path / "adapter.json"
+    adapter_config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "backend": "neon",
+                "options": {"dsn": "${MISSING_DATABASE_URL}"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, **kwargs):
+        captured["app"] = app
+        captured.update(kwargs)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "serve",
+            "--index",
+            str(tmp_path / "index"),
+            "--adapter-config",
+            str(adapter_config),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "adapter option 'dsn'" in result.output
+
+
+def test_serve_uses_adapter_config_when_env_is_set(monkeypatch, tmp_path):
+    _build_index(tmp_path)
+
+    adapter_config = tmp_path / "adapter.json"
+    adapter_config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "backend": "neon",
+                "options": {
+                    "dsn": "${DATABASE_URL}",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+
+    class FakeCursor:
+        description = [
+            ("chunk_id",),
+            ("text",),
+            ("source_doc",),
+            ("page_num",),
+            ("section",),
+            ("metadata",),
+        ]
+
+        def execute(self, _query, _params):
+            return None
+
+        def fetchall(self):
+            return [("a", "alpha", "doc-a", 1, None, {})]
+
+        def close(self):
+            return None
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    import turborag.adapters.backends as backends
+
+    monkeypatch.setattr(
+        backends, "_load_psycopg_connect", lambda: lambda _dsn: FakeConnection()
+    )
+
+    app = create_app(
+        tmp_path / "index", adapter_config=adapter_config, load_snapshot=False
+    )
+    client = TestClient(app)
+    response = client.post("/query", json={"query_vector": [2.0, 0.0, 1.0], "top_k": 1})
+    assert response.status_code == 200
+    assert response.json()["results"][0]["chunk_id"] == "a"

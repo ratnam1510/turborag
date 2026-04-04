@@ -1,0 +1,1010 @@
+# TurboRAG - AI Agent Documentation
+
+> TurboRAG is a production-grade compressed vector retrieval engine with graph-augmented search. This document contains everything AI coding agents need to implement TurboRAG correctly.
+
+## Quick Reference
+
+- **Website**: https://turborag.jpdz.app
+- **GitHub**: https://github.com/ratnam1510/turborag
+- **License**: MIT
+- **Python**: >=3.11 required
+
+## Installation
+
+```bash
+# Core (compression, indexing, CLI)
+pip install turborag
+
+# With HTTP service
+pip install turborag[serve]
+
+# With MCP agent server
+pip install turborag[mcp]
+
+# With known DB adapter integrations (Neon/Supabase/Pinecone/Qdrant/Chroma)
+pip install turborag[adapters]
+
+# With local embedding support (sentence-transformers)
+pip install turborag[embed]
+
+# With graph retrieval (networkx, Leiden clustering)
+pip install turborag[graph]
+
+# With PDF/document ingestion (pdfminer, tiktoken)
+pip install turborag[ingest]
+
+# Everything
+pip install turborag[all]
+
+# Everything + adapter integrations
+pip install turborag[all,adapters]
+
+# Everything + dev/test dependencies
+pip install turborag[all,dev]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/ratnam1510/turborag.git
+cd turborag
+pip install -e '.[all,dev]'
+```
+
+## Extras Reference
+
+| Extra | Dependencies | Use Case |
+|-------|--------------|----------|
+| (core) | numpy, scipy, click | Always installed |
+| serve | starlette, uvicorn | HTTP API with `turborag serve` |
+| mcp | mcp | MCP stdio server with `turborag mcp` |
+| adapters | psycopg, supabase, pinecone, qdrant-client, chromadb | Plug-and-play known DB integrations |
+| embed | sentence-transformers | Local text embedding |
+| graph | networkx, leidenalg, python-igraph | Graph-augmented retrieval |
+| ingest | pdfminer.six, tiktoken | PDF extraction, chunking |
+| all | All above | Full feature set |
+| dev | pytest | Running tests |
+
+---
+
+## Core API: TurboIndex
+
+### Basic Usage
+
+```python
+import numpy as np
+from turborag import TurboIndex
+
+# Create index
+index = TurboIndex(dim=384, bits=3, seed=42)
+
+# Add vectors
+vectors = np.random.randn(1000, 384).astype(np.float32)
+ids = [f"chunk-{i}" for i in range(len(vectors))]
+index.add(vectors, ids)
+
+# Search
+results = index.search(query_vector, k=10)
+for chunk_id, score in results:
+    print(chunk_id, score)
+
+# Batch search
+batch_results = index.batch_search(query_vectors, k=10)
+
+# Save/load
+index.save("./my_index")
+loaded_index = TurboIndex.load("./my_index")
+```
+
+### TurboIndex Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| dim | int | required | Vector dimension |
+| bits | int | 3 | Quantization bits (1-8). Lower = more compression |
+| seed | int | 42 | Random seed for rotation matrix |
+| normalize | bool | True | L2-normalize vectors before compression |
+| shard_size | int | 100000 | Vectors per shard |
+
+### Search Modes
+
+```python
+# Exact mode - guaranteed perfect recall
+results = index.search(query, k=10, mode="exact")
+
+# Fast mode - binary sketch pre-filter + LUT refine (97.5% recall, 4x faster)
+results = index.search(query, k=10, mode="fast")
+
+# Auto mode (default) - selects best strategy based on index size
+results = index.search(query, k=10, mode="auto")
+```
+
+### Index Operations
+
+```python
+# Delete vectors
+index.delete(["chunk-5", "chunk-10"])
+
+# Update vectors (delete + add)
+index.update(new_vectors, ["chunk-5", "chunk-10"])
+
+# Get index stats
+print(f"Size: {len(index)}")
+print(f"Dimension: {index.dim}")
+```
+
+---
+
+## Adapters: Existing RAG Integration
+
+### ExistingRAGAdapter
+
+For integrating TurboRAG into existing RAG systems without database migration:
+
+```python
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Your existing pieces
+embeddings_matrix = ...  # shape (N, D)
+chunk_ids = [...]        # your existing chunk IDs
+embedder = ...           # your query embedder
+def fetch_records(ids):  # your DB lookup
+    return db.get_chunks(ids)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=embeddings_matrix,
+    ids=chunk_ids,
+    query_embedder=embedder,
+    fetch_records=fetch_records,
+    bits=3,
+    shard_size=100_000,
+)
+
+# Query
+results = adapter.query("What changed in capex guidance?", k=5)
+```
+
+### From Existing Backend
+
+```python
+adapter = ExistingRAGAdapter.from_existing_backend(
+    embeddings=embeddings_matrix,
+    ids=ids,
+    query_embedder=embedder,
+    records_backend=existing_db_client,
+    bits=3,
+)
+```
+
+`records_backend` can be:
+- a callable `fetch_records(ids)`
+- a mapping keyed by `chunk_id`
+- a client with `fetch(ids=...)`, `retrieve(ids=...)`, or `get(ids=...)`
+
+### Known Backend Builders
+
+```python
+from turborag.adapters.backends import (
+    build_postgres_fetch_records,
+    build_neon_fetch_records,
+    build_supabase_fetch_records,
+    build_pinecone_fetch_records,
+    build_qdrant_fetch_records,
+    build_chroma_fetch_records,
+)
+```
+
+### Neon / Postgres Example
+
+```python
+from turborag.adapters.backends import build_neon_fetch_records
+
+fetch_records = build_neon_fetch_records(
+    dsn="postgresql://user:pass@host/db",
+    table="public.chunks",
+    id_column="chunk_id",
+    text_column="text",
+)
+
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=embeddings_matrix,
+    ids=ids,
+    query_embedder=embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+```
+
+### Supabase Example
+
+```python
+from supabase import create_client
+from turborag.adapters.backends import build_supabase_fetch_records
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+fetch_records = build_supabase_fetch_records(supabase, table="chunks")
+```
+
+### Pinecone Example
+
+```python
+from pinecone import Pinecone
+from turborag.adapters.backends import build_pinecone_fetch_records
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index("your-index")
+fetch_records = build_pinecone_fetch_records(index, namespace="prod")
+```
+
+### Qdrant Example
+
+```python
+from qdrant_client import QdrantClient
+from turborag.adapters.backends import build_qdrant_fetch_records
+
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+fetch_records = build_qdrant_fetch_records(client, collection_name="chunks")
+```
+
+### Chroma Example
+
+```python
+import chromadb
+from turborag.adapters.backends import build_chroma_fetch_records
+
+chroma = chromadb.PersistentClient(path="./chroma")
+collection = chroma.get_collection("chunks")
+fetch_records = build_chroma_fetch_records(collection)
+```
+
+### TurboVectorStore (LangChain-style)
+
+```python
+from turborag.adapters.langchain import TurboVectorStore
+
+# From existing records
+db = TurboVectorStore.from_existing_records(
+    ids=ids,
+    embeddings=embeddings_matrix,
+    embedding=embedder,
+    resolver=fetch_records,
+    bits=3,
+)
+
+# From texts (creates embeddings)
+db = TurboVectorStore.from_texts(
+    texts=["text1", "text2", ...],
+    embedding=embedder,
+    bits=3,
+)
+
+# LangChain-compatible methods
+results = db.similarity_search("query", k=5)
+results_with_scores = db.similarity_search_with_score("query", k=5)
+retriever = db.as_retriever()
+```
+
+---
+
+## Node.js / TypeScript Client
+
+TurboRAG provides a typed TypeScript client for Node.js applications. Zero runtime dependencies — uses native `fetch`.
+
+### Installation
+
+```bash
+npm install turborag
+```
+
+### Prerequisites
+
+Start a TurboRAG server (Python side):
+
+```bash
+# With Docker (no Python needed)
+docker run -p 8080:8080 -v ./my_index:/data/index turborag \
+  turborag serve --index /data/index --host 0.0.0.0
+
+# Or with pip
+pip install turborag[serve]
+turborag serve --index ./my_index --port 8080
+```
+
+### Basic Usage
+
+```typescript
+import { TurboRAG } from "turborag";
+
+const client = new TurboRAG("http://localhost:8080");
+
+// Query by vector
+const { results } = await client.query({
+  vector: [0.1, 0.2, 0.3],
+  topK: 5,
+});
+
+for (const r of results) {
+  console.log(r.chunk_id, r.score, r.text);
+}
+
+// Query by text (requires --model on the server)
+const textResults = await client.queryText({
+  text: "What changed in capex guidance?",
+  topK: 5,
+});
+```
+
+### ID-Only Mode (Hydrate from Your DB)
+
+```typescript
+// Query IDs only — application hydrates from existing DB
+const idOnly = await client.queryIds({
+  vector: [0.1, 0.2, 0.3],
+  topK: 5,
+});
+
+// Batch IDs only
+const batchIds = await client.queryBatchIds({
+  queries: [
+    { vector: [0.1, 0.2, 0.3] },
+    { vector: [0.4, 0.5, 0.6] },
+  ],
+  topK: 5,
+});
+```
+
+### Batch Queries
+
+```typescript
+const batch = await client.queryBatch({
+  queries: [
+    { vector: [0.1, 0.2, 0.3] },
+    { vector: [0.4, 0.5, 0.6] },
+  ],
+  topK: 5,
+});
+```
+
+### Ingest Records
+
+```typescript
+await client.ingest({
+  records: [
+    {
+      chunk_id: "c1",
+      text: "Capital expenditure guidance increased.",
+      embedding: [0.1, 0.2, 0.3],
+      source_doc: "q3_call.pdf",
+    },
+  ],
+});
+
+// Ingest raw text (auto-chunked, requires --model)
+await client.ingestText({
+  text: "Full document text to chunk and index...",
+  sourceDoc: "report.md",
+});
+```
+
+### Client from Environment
+
+```typescript
+import { TurboRAG } from "turborag";
+
+// Reads TURBORAG_API_URL, TURBORAG_TIMEOUT_MS, TURBORAG_TOP_K
+const client = TurboRAG.fromEnv();
+```
+
+Environment variables:
+- `TURBORAG_API_URL` or `TURBORAG_URL` — server URL (default: `http://localhost:8080`)
+- `TURBORAG_TIMEOUT_MS` or `TURBORAG_TIMEOUT` — request timeout (default: `30000`)
+- `TURBORAG_TOP_K` — default top_k (default: `5`)
+
+### Health & Metrics
+
+```typescript
+const health = await client.health();
+const info = await client.index();
+const metrics = await client.metrics();
+```
+
+### TypeScript Types
+
+```typescript
+import type {
+  QueryResult,
+  QueryResponse,
+  QueryParams,
+  BatchQueryResponse,
+  BatchQueryParams,
+  IngestRecord,
+  IngestResponse,
+  HealthResponse,
+  IndexInfo,
+  MetricsResponse,
+} from "turborag";
+```
+
+### Error Handling
+
+```typescript
+import {
+  TurboRAGError,
+  ValidationError,
+  ConnectionError,
+  TimeoutError,
+} from "turborag";
+
+try {
+  await client.query({ vector: [], topK: 5 });
+} catch (e) {
+  if (e instanceof ValidationError) {
+    console.error("Invalid input:", e.message);
+  } else if (e instanceof ConnectionError) {
+    console.error("Cannot reach server:", e.message);
+  } else if (e instanceof TimeoutError) {
+    console.error("Request timed out:", e.message);
+  }
+}
+```
+
+### API Reference
+
+| Method | Description |
+|--------|-------------|
+| `query({ vector, topK, hydrate })` | Search by embedding vector |
+| `queryIds({ vector, topK })` | Search, return ID-only hits |
+| `queryText({ text, topK })` | Search by text (requires `--model`) |
+| `queryBatch({ queries, topK, hydrate })` | Batch vector search |
+| `queryBatchIds({ queries, topK })` | Batch search, ID-only |
+| `ingest({ records })` | Add records with embeddings |
+| `ingestText({ text, sourceDoc })` | Ingest raw text |
+| `health()` | Health check |
+| `index()` / `getIndex()` / `describe()` | Index config and stats |
+| `metrics()` / `getMetrics()` | Latency and error metrics |
+
+---
+
+## Plug-and-Play Adapter CLI
+
+Use `turborag adapt` to configure known backends once:
+
+```bash
+# Auto-detect from environment
+turborag adapt --index ./turborag_sidecar
+
+# Force a specific backend
+turborag adapt --index ./turborag_sidecar --backend supabase
+
+# Dedicated backend commands
+turborag adapt supabase --index ./turborag_sidecar
+turborag adapt neon --index ./turborag_sidecar
+turborag adapt pinecone --index ./turborag_sidecar
+turborag adapt qdrant --index ./turborag_sidecar
+turborag adapt chroma --index ./turborag_sidecar
+
+# Show / remove config
+turborag adapt show --index ./turborag_sidecar
+turborag adapt remove --index ./turborag_sidecar
+
+# Demo command template
+turborag adapt demo supabase
+```
+
+---
+
+## HTTP Service API
+
+### Start Server
+
+```bash
+# Basic
+turborag serve --index ./my_index --host 0.0.0.0 --port 8080
+
+# With text queries and multiple workers
+turborag serve \
+  --index ./my_index \
+  --model sentence-transformers/all-MiniLM-L6-v2 \
+  --workers 4 \
+  --cors-origins "http://localhost:3000"
+
+# Low-memory sidecar mode (no local snapshot hydration)
+turborag serve --index ./my_index --no-load-snapshot
+
+# With adapter config
+turborag adapt --index ./my_index
+turborag serve --index ./my_index
+
+# Strict hydration (drop hits that cannot be hydrated)
+turborag serve --index ./my_index --require-hydrated
+```
+
+### Endpoints
+
+#### GET /health
+```json
+{"status": "ok", "index_path": "./my_index", "index_size": 100000}
+```
+
+#### GET /index
+Returns index configuration and hydration mode:
+- `hydration_source`: `local_snapshot`, `external_backend`, `hybrid`, or `id_only`
+- `allow_unhydrated`: whether unresolved hits are returned as ID-only
+- `text_query_enabled`: whether `query_text` is enabled
+
+#### GET /metrics
+```json
+{
+  "uptime_seconds": 3600.1,
+  "errors": 2,
+  "endpoints": {
+    "/query": {"count": 1500, "total_ms": 45000.0, "avg_ms": 30.0}
+  }
+}
+```
+
+#### POST /query
+```bash
+# Vector query
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector": [0.1, 0.2, ...], "top_k": 5}'
+
+# Text query (requires --model)
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_text": "What changed in capex guidance?", "top_k": 5}'
+
+# ID-only response (hydrate in your existing DB)
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector": [0.1, 0.2, ...], "top_k": 5, "hydrate": false}'
+```
+
+Response:
+```json
+{
+  "count": 2,
+  "results": [
+    {
+      "chunk_id": "chunk-12",
+      "text": "Capital expenditure guidance was raised...",
+      "score": 0.8421,
+      "source_doc": "q3_call.pdf",
+      "page_num": 18
+    }
+  ]
+}
+```
+
+#### POST /query/batch
+```bash
+curl -X POST http://localhost:8080/query/batch \
+  -H 'content-type: application/json' \
+  -d '{
+    "queries": [
+      {"query_vector": [0.1, 0.2, 0.3]},
+      {"query_vector": [0.4, 0.5, 0.6]}
+    ],
+    "top_k": 5,
+    "hydrate": false
+  }'
+```
+
+#### POST /ingest
+```bash
+curl -X POST http://localhost:8080/ingest \
+  -H 'content-type: application/json' \
+  -d '{
+    "records": [
+      {
+        "chunk_id": "chunk-999",
+        "text": "New chunk text",
+        "embedding": [0.1, 0.2, ...],
+        "source_doc": "new.pdf",
+        "metadata": {"source": "manual"}
+      }
+    ]
+  }'
+```
+
+#### POST /ingest-text
+```bash
+curl -X POST http://localhost:8080/ingest-text \
+  -H 'content-type: application/json' \
+  -d '{
+    "text": "Full document text to chunk and index...",
+    "source_doc": "report.md",
+    "chunk_config": {"chunk_size": 512, "chunk_overlap": 64}
+  }'
+```
+
+---
+
+## CLI Reference
+
+### Import Existing Data
+
+```bash
+# From JSONL
+turborag import-existing-index \
+  --input ./dataset.jsonl \
+  --index ./turborag_sidecar \
+  --bits 3
+
+# JSONL format (one record per line):
+# {"chunk_id": "c1", "text": "...", "embedding": [0.1, 0.2, ...]}
+```
+
+### Query
+
+```bash
+# By vector
+turborag query \
+  --index ./my_index \
+  --query-vector '[0.1, 0.2, 0.3]' \
+  --top-k 5
+
+# ID-only results (lowest memory)
+turborag query \
+  --index ./my_index \
+  --query-vector '[0.1, 0.2, 0.3]' \
+  --top-k 5 \
+  --ids-only
+
+# By text (requires embed extra)
+turborag query \
+  --index ./my_index \
+  --query 'What changed in capex guidance?' \
+  --model sentence-transformers/all-MiniLM-L6-v2 \
+  --top-k 5
+```
+
+### Describe Index
+
+```bash
+turborag describe-index --index ./my_index
+```
+
+### Benchmark
+
+```bash
+# TurboRAG only
+turborag benchmark \
+  --index ./my_index \
+  --queries ./queries.jsonl \
+  --k 10
+
+# With baselines
+turborag benchmark \
+  --index ./my_index \
+  --queries ./queries.jsonl \
+  --dataset ./corpus.jsonl \
+  --baseline exact \
+  --baseline faiss-flat \
+  --baseline faiss-hnsw \
+  --k 10
+```
+
+### MCP Server
+
+```bash
+turborag mcp --index ./my_index
+```
+
+Tools exposed: `turborag_query`, `turborag_describe`, `turborag_ingest`
+
+---
+
+## Docker
+
+```bash
+# Build
+docker build -t turborag .
+
+# Serve
+docker run -p 8080:8080 -v ./my_index:/data/index turborag \
+  turborag serve --index /data/index --host 0.0.0.0
+
+# MCP over stdio
+docker run -i turborag turborag mcp --index /data/index
+```
+
+---
+
+## Data Types
+
+### ChunkRecord
+
+```python
+from turborag.types import ChunkRecord
+
+record = ChunkRecord(
+    chunk_id="chunk-123",
+    text="The actual chunk text...",
+    source_doc="document.pdf",
+    page_num=5,
+    section="Introduction",
+    metadata={"author": "Jane Doe"}
+)
+```
+
+### RetrievalResult
+
+```python
+from turborag.types import RetrievalResult
+
+# Returned from searches
+result = RetrievalResult(
+    chunk_id="chunk-123",
+    score=0.8421,
+    text="The chunk text...",
+    source_doc="doc.pdf",
+    page_num=5,
+    graph_path=None,
+    explanation=None
+)
+```
+
+---
+
+## Storage Layout
+
+```
+index/
+  config.json          # Index settings
+  records.jsonl        # Optional local chunk records
+  rotation.npy         # Rotation matrix
+  sketch.bin           # Binary SimHash sketches
+  adapter.json         # Optional adapter config
+  shards/
+    shard_000.bin      # Packed vectors
+    shard_000.ids.json # Chunk IDs
+    shard_000.sketch.bin
+```
+
+---
+
+## Performance Benchmarks
+
+### Small Scale (1K vectors, 128-dim, 4-bit)
+
+| Backend | Recall@10 | QPS | Memory |
+|---------|-----------|-----|--------|
+| **TurboRAG 4-bit** | **1.000** | **6,209** | **0.08 MB** |
+| Exact float32 | 1.000 | 26,774 | 0.49 MB |
+| FAISS Flat | 1.000 | 32,384 | 0.49 MB |
+| FAISS HNSW | 1.000 | 23,640 | 0.55 MB |
+
+### Large Scale (100K vectors, 384-dim, 3-bit)
+
+| Backend | Recall@10 | QPS | Memory |
+|---------|-----------|-----|--------|
+| **TurboRAG exact** | **1.000** | **67** | **18.3 MB** |
+| **TurboRAG fast** | **0.975** | **274** | **18.3 MB** |
+| Exact float32 | 1.000 | 240 | 146.5 MB |
+| FAISS HNSW | 0.645 | 1,928 | 152.6 MB |
+
+**Key advantages:**
+- 8x memory compression (18.3 MB vs 146.5 MB)
+- Perfect recall in exact mode
+- 97.5% recall with 4x speedup in fast mode
+- 64% higher recall than HNSW at large scale
+
+---
+
+## Graph-Augmented Retrieval
+
+### GraphBuilder
+
+```python
+from turborag.graph import GraphBuilder
+
+builder = GraphBuilder(llm_client=your_llm)
+builder.add_document("doc-1", "Document text...")
+builder.build()
+builder.save("./graph_index")
+
+# Load later
+loaded_builder = GraphBuilder.load("./graph_index")
+```
+
+### HybridRetriever
+
+```python
+from turborag.hybrid import HybridRetriever
+
+retriever = HybridRetriever(
+    index=turbo_index,
+    graph=graph_builder.graph,
+    dense_weight=0.7,
+    graph_weight=0.3
+)
+
+results = retriever.search(query_vector, k=10)
+# Returns results with graph_path and explanation fields
+```
+
+---
+
+## Document Chunking
+
+```python
+from turborag.chunker import chunk_document
+
+chunks = chunk_document(
+    text="Full document text...",
+    chunk_size=512,
+    chunk_overlap=64,
+    source_doc="document.pdf"
+)
+
+# Returns list of ChunkRecord objects
+```
+
+---
+
+## Exception Handling
+
+```python
+from turborag.exceptions import (
+    TurboRAGError,        # Base exception
+    IndexError,           # Index operations
+    ValidationError,      # Input validation
+    PersistenceError,     # Save/load errors
+    ConfigurationError,   # Setup errors
+)
+
+try:
+    index.add(invalid_vectors, ids)
+except ValidationError as e:
+    print(f"Invalid input: {e}")
+```
+
+---
+
+## Sidecar Adoption Pattern
+
+TurboRAG is designed as a retrieval sidecar - it runs alongside your existing database:
+
+1. **Keep existing database** - No migration needed
+2. **Export embeddings** - One-time export of existing vectors
+3. **Build TurboRAG index** - `turborag import-existing-index`
+4. **Configure adapter** - `turborag adapt` (optional)
+5. **Query TurboRAG** - Returns ranked chunk IDs
+6. **Hydrate from existing DB** - Fetch full records from your database
+
+```python
+# Typical integration
+def search(query: str, k: int = 5):
+    # 1. Embed query (your existing embedder)
+    query_vec = embedder.encode(query)
+    
+    # 2. Search TurboRAG (returns IDs)
+    results = turbo_index.search(query_vec, k=k)
+    chunk_ids = [r[0] for r in results]
+    
+    # 3. Hydrate from existing DB
+    return existing_db.get_chunks(chunk_ids)
+```
+
+---
+
+## Package Structure
+
+```
+src/turborag/
+  __init__.py
+  _cscore.c            # C scoring kernel (auto-compiled)
+  _cscore_wrapper.py   # ctypes bridge
+  adapters/            # LangChain-style adapters + backend builders
+    compat.py          # ExistingRAGAdapter
+    langchain.py       # TurboVectorStore
+    backends.py        # Known DB builders (Neon, Supabase, Pinecone, etc.)
+    config.py          # Adapter config persistence
+  benchmark.py         # Benchmark harness
+  chunker.py           # Token-aware chunking
+  cli.py               # CLI commands (including `adapt`)
+  compress.py          # Rotation, quantization, LUT scoring
+  embeddings.py        # sentence-transformers integration
+  exceptions.py        # Exception hierarchy
+  fast_kernels.py      # Vectorized scoring
+  graph.py             # Entity graph + communities
+  hybrid.py            # Dense + graph retrieval
+  index.py             # TurboIndex
+  ingest.py            # Dataset import
+  mcp_server.py        # MCP stdio server
+  service.py           # HTTP service
+  types.py             # ChunkRecord, RetrievalResult
+```
+
+---
+
+## Verification
+
+```bash
+# Run tests (104+ tests)
+pytest
+
+# Smoke test
+./scripts/smoke_test.sh
+
+# Check C kernel
+python -c "from turborag._cscore_wrapper import is_available; print('C kernel:', 'available' if is_available() else 'fallback')"
+```
+
+---
+
+## Common Patterns
+
+### Build index from scratch
+
+```python
+from turborag import TurboIndex
+import numpy as np
+
+index = TurboIndex(dim=384, bits=3)
+vectors = np.load("embeddings.npy")
+ids = [f"doc-{i}" for i in range(len(vectors))]
+index.add(vectors, ids)
+index.save("./my_index")
+```
+
+### Production deployment with adapter
+
+```bash
+# 1. Build index
+turborag import-existing-index --input data.jsonl --index ./prod_index --bits 3
+
+# 2. Configure adapter
+turborag adapt --index ./prod_index
+
+# 3. Deploy with Docker
+docker build -t turborag .
+docker run -p 8080:8080 -v ./prod_index:/data/index turborag \
+  turborag serve --index /data/index --host 0.0.0.0 --workers 4
+```
+
+### Incremental updates
+
+```python
+# Add new vectors at runtime
+new_vectors = embed_new_documents(new_docs)
+new_ids = [doc.id for doc in new_docs]
+index.add(new_vectors, new_ids)
+index.save("./my_index")  # Persist changes
+```
+
+---
+
+## FAQ for AI Agents
+
+**Q: What Python version?**
+A: Python >=3.11 required.
+
+**Q: How to choose bits parameter?**
+A: 3-4 bits recommended. Lower = more compression, slightly lower recall.
+
+**Q: How to handle large datasets?**
+A: Use shards (automatic with shard_size parameter). Memory-mapped for large indexes.
+
+**Q: Text queries without embedding model?**
+A: Pass pre-computed vectors. Text queries require `turborag[embed]` extra.
+
+**Q: Real-time updates?**
+A: Yes, use `index.add()` and `index.delete()`. Thread-safe with HTTP service.
+
+**Q: GPU support?**
+A: CPU-optimized with SIMD. No GPU required.
+
+**Q: How to integrate with existing DB?**
+A: Use `turborag[adapters]` extra. Build backend with `build_*_fetch_records()` or use `turborag adapt` CLI.
+
+**Q: ID-only mode for lowest memory?**
+A: Use `--ids-only` CLI flag or `hydrate=false` in HTTP queries. Start server with `--no-load-snapshot`.
+
+---
+
+This documentation is auto-generated for AI agent consumption.
+For human-readable docs, visit: https://turborag.jpdz.app

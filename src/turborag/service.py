@@ -18,7 +18,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .adapters.compat import ExistingRAGAdapter
+from .adapters.compat import (
+    ExistingRAGAdapter,
+    coerce_chunk_record,
+    resolve_records_backend,
+)
+from .adapters.config import build_fetch_records_from_config, maybe_load_adapter_config
 from .exceptions import TurboRAGError
 from .ingest import SNAPSHOT_FILE_NAME, load_records_snapshot, write_records_snapshot
 from .index import TurboIndex
@@ -29,6 +34,7 @@ logger = logging.getLogger("turborag.service")
 # ---------------------------------------------------------------------------
 #  Metrics collector (lightweight, no external deps)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _LatencyBucket:
@@ -85,12 +91,16 @@ class Metrics:
 #  TurboService
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class TurboService:
     index_path: Path
     index: TurboIndex
     records: dict[str, ChunkRecord]
     query_embedder: Any | None = None
+    external_fetch_records: Any | None = None
+    adapter_config_path: Path | None = None
+    allow_unhydrated: bool = True
 
     @classmethod
     def open(
@@ -98,12 +108,47 @@ class TurboService:
         index_path: str | Path,
         *,
         query_embedder: Any | None = None,
+        fetch_records: Any | None = None,
+        records_backend: Any | None = None,
+        adapter_config: str | Path | None = None,
+        load_snapshot: bool = True,
+        allow_unhydrated: bool = True,
     ) -> "TurboService":
+        if (fetch_records is not None and records_backend is not None) or (
+            adapter_config is not None
+            and (fetch_records is not None or records_backend is not None)
+        ):
+            raise ValueError(
+                "Provide one hydration source: fetch_records, records_backend, or adapter_config"
+            )
+
         target = Path(index_path)
         index = TurboIndex.open(str(target))
         snapshot_path = target / SNAPSHOT_FILE_NAME
-        records = load_records_snapshot(snapshot_path) if snapshot_path.exists() else {}
-        return cls(index_path=target, index=index, records=records, query_embedder=query_embedder)
+        records = {}
+        if load_snapshot and snapshot_path.exists():
+            records = load_records_snapshot(snapshot_path)
+
+        external_resolver = fetch_records
+        if records_backend is not None:
+            external_resolver = resolve_records_backend(records_backend)
+
+        cfg_payload: dict[str, Any] | None = None
+        cfg_path: Path | None = None
+        if external_resolver is None:
+            cfg_payload, cfg_path = maybe_load_adapter_config(target, adapter_config)
+            if cfg_payload is not None:
+                external_resolver = build_fetch_records_from_config(cfg_payload)
+
+        return cls(
+            index_path=target,
+            index=index,
+            records=records,
+            query_embedder=query_embedder,
+            external_fetch_records=external_resolver,
+            adapter_config_path=cfg_path,
+            allow_unhydrated=allow_unhydrated,
+        )
 
     @property
     def snapshot_path(self) -> Path:
@@ -111,6 +156,15 @@ class TurboService:
 
     def describe(self) -> dict[str, Any]:
         snapshot = self.snapshot_path if self.snapshot_path.exists() else None
+        if self.records and self.external_fetch_records is not None:
+            hydration_source = "hybrid"
+        elif self.records:
+            hydration_source = "local_snapshot"
+        elif self.external_fetch_records is not None:
+            hydration_source = "external_backend"
+        else:
+            hydration_source = "id_only"
+
         return {
             "index_path": str(self.index_path),
             "dim": self.index.dim,
@@ -122,15 +176,36 @@ class TurboService:
             "records_loaded": len(self.records),
             "records_snapshot": None if snapshot is None else str(snapshot),
             "text_query_enabled": self.query_embedder is not None,
+            "hydration_source": hydration_source,
+            "adapter_config": None
+            if self.adapter_config_path is None
+            else str(self.adapter_config_path),
+            "allow_unhydrated": self.allow_unhydrated,
         }
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
-        query_text, query_vector, top_k = _validate_query_payload(payload)
+        query_text, query_vector, top_k, hydrate = _validate_query_payload(payload)
+
+        if not hydrate:
+            if query_text is not None:
+                vector = _embed_service_query(self.query_embedder, query_text)
+            else:
+                vector = np.asarray(query_vector, dtype=np.float32)
+
+            hits = self.index.search(vector, k=top_k)
+            return {
+                "count": len(hits),
+                "results": [
+                    _serialize_unhydrated_result(chunk_id, score)
+                    for chunk_id, score in hits
+                ],
+            }
 
         adapter = ExistingRAGAdapter(
             index=self.index,
             query_embedder=self.query_embedder or _MissingServiceQueryEmbedder(),
             fetch_records=self._fetch_records,
+            allow_unhydrated=self.allow_unhydrated,
         )
 
         if query_text is not None:
@@ -146,6 +221,10 @@ class TurboService:
 
     def query_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Handle batch vector queries."""
+        hydrate = payload.get("hydrate", True)
+        if not isinstance(hydrate, bool):
+            raise ValueError("hydrate must be a boolean")
+
         queries = payload.get("queries")
         if not isinstance(queries, list) or not queries:
             raise ValueError("queries must be a non-empty list")
@@ -157,30 +236,55 @@ class TurboService:
         vectors = []
         for i, q in enumerate(queries):
             if not isinstance(q, dict):
-                raise ValueError(f"Query {i+1} must be an object with query_vector")
+                raise ValueError(f"Query {i + 1} must be an object with query_vector")
             qv = q.get("query_vector")
             if not isinstance(qv, list) or not qv:
-                raise ValueError(f"Query {i+1} requires a non-empty query_vector")
+                raise ValueError(f"Query {i + 1} requires a non-empty query_vector")
             vectors.append([float(v) for v in qv])
 
         query_matrix = np.asarray(vectors, dtype=np.float32)
         all_results = self.index.search_batch(query_matrix, k=top_k)
 
+        fetched_by_id: dict[str, ChunkRecord] = {}
+        if hydrate:
+            requested_ids: list[str] = []
+            seen: set[str] = set()
+            for hits in all_results:
+                for chunk_id, _ in hits:
+                    if chunk_id in seen:
+                        continue
+                    seen.add(chunk_id)
+                    requested_ids.append(chunk_id)
+
+            fetched = self._fetch_records(requested_ids)
+            fetched_by_id = {record.chunk_id: record for record in fetched}
+
         batch_results = []
         for hits in all_results:
             result_list = []
             for chunk_id, score in hits:
-                rec = self.records.get(chunk_id)
-                if rec:
-                    result_list.append(_serialize_result(RetrievalResult(
-                        chunk_id=rec.chunk_id,
-                        text=rec.text,
-                        score=score,
-                        source_doc=rec.source_doc,
-                        page_num=rec.page_num,
-                    )))
+                if not hydrate:
+                    result_list.append(_serialize_unhydrated_result(chunk_id, score))
+                    continue
+
+                rec = fetched_by_id.get(chunk_id)
+                if rec is not None:
+                    result_list.append(
+                        _serialize_result(
+                            RetrievalResult(
+                                chunk_id=rec.chunk_id,
+                                text=rec.text,
+                                score=score,
+                                source_doc=rec.source_doc,
+                                page_num=rec.page_num,
+                                explanation="Retrieved from TurboRAG using the existing application record store.",
+                            )
+                        )
+                    )
+                elif self.allow_unhydrated:
+                    result_list.append(_serialize_unhydrated_result(chunk_id, score))
                 else:
-                    result_list.append({"chunk_id": chunk_id, "score": float(score)})
+                    continue
             batch_results.append({"count": len(result_list), "results": result_list})
 
         return {"batch_count": len(batch_results), "results": batch_results}
@@ -225,7 +329,9 @@ class TurboService:
             return {"added": 0, "index_size": len(self.index)}
 
         texts = [c.text for c in chunks]
-        embeddings = np.array([self.query_embedder.embed(t) for t in texts], dtype=np.float32)
+        embeddings = np.array(
+            [self.query_embedder.embed(t) for t in texts], dtype=np.float32
+        )
         ids = [c.chunk_id for c in chunks]
 
         self.index.add(embeddings, ids)
@@ -242,7 +348,33 @@ class TurboService:
         }
 
     def _fetch_records(self, ids: Sequence[str]) -> Sequence[ChunkRecord]:
-        return [self.records[chunk_id] for chunk_id in ids if chunk_id in self.records]
+        local: dict[str, ChunkRecord] = {}
+        missing: list[str] = []
+        for chunk_id in ids:
+            record = self.records.get(chunk_id)
+            if record is not None:
+                local[chunk_id] = record
+            else:
+                missing.append(chunk_id)
+
+        external: dict[str, ChunkRecord] = {}
+        if missing and self.external_fetch_records is not None:
+            raw_records = self.external_fetch_records(missing)
+            for item in raw_records:
+                try:
+                    record = coerce_chunk_record(item)
+                except (TypeError, ValueError):
+                    continue
+                external[record.chunk_id] = record
+
+        combined: list[ChunkRecord] = []
+        for chunk_id in ids:
+            if chunk_id in local:
+                combined.append(local[chunk_id])
+                continue
+            if chunk_id in external:
+                combined.append(external[chunk_id])
+        return combined
 
 
 class _MissingServiceQueryEmbedder:
@@ -256,13 +388,27 @@ class _MissingServiceQueryEmbedder:
 #  Starlette App Factory
 # ---------------------------------------------------------------------------
 
+
 def create_app(
     index_path: str | Path,
     *,
     query_embedder: Any | None = None,
+    fetch_records: Any | None = None,
+    records_backend: Any | None = None,
+    adapter_config: str | Path | None = None,
+    load_snapshot: bool = True,
+    allow_unhydrated: bool = True,
     cors_origins: list[str] | None = None,
 ) -> Starlette:
-    service = TurboService.open(index_path, query_embedder=query_embedder)
+    service = TurboService.open(
+        index_path,
+        query_embedder=query_embedder,
+        fetch_records=fetch_records,
+        records_backend=records_backend,
+        adapter_config=adapter_config,
+        load_snapshot=load_snapshot,
+        allow_unhydrated=allow_unhydrated,
+    )
     metrics = Metrics()
     _write_lock = threading.Lock()
 
@@ -283,11 +429,13 @@ def create_app(
         return JSONResponse(service.describe())
 
     async def health(request: Request) -> JSONResponse:
-        return JSONResponse({
-            "status": "ok",
-            "index_path": str(service.index_path),
-            "index_size": len(service.index),
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "index_path": str(service.index_path),
+                "index_size": len(service.index),
+            }
+        )
 
     async def describe_index(request: Request) -> JSONResponse:
         return JSONResponse(service.describe())
@@ -302,7 +450,12 @@ def create_app(
             result = service.query(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/query", elapsed)
-            logger.info("query rid=%s k=%s latency=%.1fms", rid, payload.get("top_k", 5), elapsed)
+            logger.info(
+                "query rid=%s k=%s latency=%.1fms",
+                rid,
+                payload.get("top_k", 5),
+                elapsed,
+            )
             return JSONResponse(result)
         except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
@@ -319,7 +472,12 @@ def create_app(
             result = service.query_batch(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/query/batch", elapsed)
-            logger.info("query_batch rid=%s n=%d latency=%.1fms", rid, result["batch_count"], elapsed)
+            logger.info(
+                "query_batch rid=%s n=%d latency=%.1fms",
+                rid,
+                result["batch_count"],
+                elapsed,
+            )
             return JSONResponse(result)
         except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
@@ -336,7 +494,9 @@ def create_app(
                 result = service.ingest_records(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest", elapsed)
-            logger.info("ingest rid=%s added=%d latency=%.1fms", rid, result["added"], elapsed)
+            logger.info(
+                "ingest rid=%s added=%d latency=%.1fms", rid, result["added"], elapsed
+            )
             return JSONResponse(result)
         except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
@@ -353,7 +513,12 @@ def create_app(
                 result = service.ingest_text(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest-text", elapsed)
-            logger.info("ingest_text rid=%s added=%d latency=%.1fms", rid, result["added"], elapsed)
+            logger.info(
+                "ingest_text rid=%s added=%d latency=%.1fms",
+                rid,
+                result["added"],
+                elapsed,
+            )
             return JSONResponse(result)
         except (RuntimeError, ValueError, TurboRAGError) as exc:
             metrics.record_error()
@@ -397,6 +562,7 @@ def create_app(
 #  Serialisation Helpers
 # ---------------------------------------------------------------------------
 
+
 def _serialize_result(result: RetrievalResult) -> dict[str, Any]:
     return {
         "chunk_id": result.chunk_id,
@@ -409,11 +575,28 @@ def _serialize_result(result: RetrievalResult) -> dict[str, Any]:
     }
 
 
-def _validate_query_payload(payload: dict[str, Any]) -> tuple[str | None, list[float] | None, int]:
+def _serialize_unhydrated_result(chunk_id: str, score: float) -> dict[str, Any]:
+    return {
+        "chunk_id": chunk_id,
+        "text": "",
+        "score": float(score),
+        "source_doc": None,
+        "page_num": None,
+        "graph_path": None,
+        "explanation": (
+            "Retrieved from TurboRAG sidecar by chunk ID. "
+            "Hydrate text/metadata from the existing database using chunk_id."
+        ),
+    }
+
+
+def _validate_query_payload(
+    payload: dict[str, Any],
+) -> tuple[str | None, list[float] | None, int, bool]:
     if not isinstance(payload, dict):
         raise ValueError("Query payload must be a JSON object.")
 
-    allowed_keys = {"query_text", "query_vector", "top_k"}
+    allowed_keys = {"query_text", "query_vector", "top_k", "hydrate"}
     unknown = sorted(set(payload) - allowed_keys)
     if unknown:
         raise ValueError(f"Unknown query fields: {', '.join(unknown)}")
@@ -421,6 +604,11 @@ def _validate_query_payload(payload: dict[str, Any]) -> tuple[str | None, list[f
     query_text = payload.get("query_text")
     query_vector = payload.get("query_vector")
     top_k = int(payload.get("top_k", 5))
+    hydrate = payload.get("hydrate", True)
+
+    if not isinstance(hydrate, bool):
+        raise ValueError("hydrate must be a boolean.")
+
     if top_k <= 0 or top_k > 1000:
         raise ValueError("top_k must be between 1 and 1000.")
 
@@ -437,10 +625,37 @@ def _validate_query_payload(payload: dict[str, Any]) -> tuple[str | None, list[f
     else:
         query_vector = None
 
-    return (query_text if has_text else None, query_vector, top_k)
+    return (query_text if has_text else None, query_vector, top_k, hydrate)
 
 
-def _validate_ingest_payload(payload: dict[str, Any]) -> tuple[list[ChunkRecord], np.ndarray]:
+def _embed_service_query(query_embedder: Any | None, text: str) -> np.ndarray:
+    if query_embedder is None:
+        raise RuntimeError(
+            "Text queries are not enabled for this service. Start `turborag serve` with --model or send query_vector."
+        )
+
+    if hasattr(query_embedder, "embed_query"):
+        value = query_embedder.embed_query(text)
+    elif hasattr(query_embedder, "embed"):
+        value = query_embedder.embed(text)
+    elif hasattr(query_embedder, "encode"):
+        value = query_embedder.encode(text)
+    elif callable(query_embedder):
+        value = query_embedder(text)
+    else:
+        raise RuntimeError("query_embedder is not callable and has no embed method")
+
+    vector = np.asarray(value, dtype=np.float32)
+    if vector.ndim == 2 and vector.shape[0] == 1:
+        vector = vector[0]
+    if vector.ndim != 1:
+        raise ValueError("Embedded query must be one-dimensional")
+    return vector
+
+
+def _validate_ingest_payload(
+    payload: dict[str, Any],
+) -> tuple[list[ChunkRecord], np.ndarray]:
     if not isinstance(payload, dict):
         raise ValueError("Ingest payload must be a JSON object.")
 
@@ -486,7 +701,9 @@ def _validate_ingest_payload(payload: dict[str, Any]) -> tuple[list[ChunkRecord]
         if not isinstance(embedding, list) or not embedding:
             raise ValueError(f"Record {index} requires a non-empty embedding array.")
         if not all(isinstance(value, (int, float)) for value in embedding):
-            raise ValueError(f"Record {index} embedding must contain only numeric values.")
+            raise ValueError(
+                f"Record {index} embedding must contain only numeric values."
+            )
         if not isinstance(metadata, dict):
             raise ValueError(f"Record {index} metadata must be an object.")
 
@@ -517,4 +734,6 @@ def _write_index_config(index: TurboIndex, index_path: Path) -> None:
         "schema_version": 1,
         "size": len(index),
     }
-    (index_path / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    (index_path / "config.json").write_text(
+        json.dumps(config, indent=2), encoding="utf-8"
+    )

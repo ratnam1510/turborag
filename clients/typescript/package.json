@@ -1,0 +1,38 @@
+{
+  "name": "turborag",
+  "version": "0.4.0",
+  "description": "TypeScript/Node.js client for the TurboRAG compressed vector retrieval API",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "coverage": "npm run build && node --experimental-test-coverage --test-coverage-include=dist/*.js --test-coverage-exclude=tests/*.cjs --test tests/*.test.cjs",
+    "test:integration": "npm run build && TURBORAG_INTEGRATION_TEST=1 node --test tests/integration.test.cjs",
+    "benchmark": "npm run build && node run-benchmark.cjs",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "rag",
+    "vector-search",
+    "retrieval",
+    "turborag",
+    "turboquant",
+    "embeddings",
+    "llm"
+  ],
+  "author": "Ratnam Shah",
+  "license": "Proprietary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ratnam1510/turborag",
+    "directory": "clients/typescript"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4"
+  }
+}

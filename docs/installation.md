@@ -14,6 +14,12 @@ pip install turborag[serve]
 # With MCP agent server
 pip install turborag[mcp]
 
+# With known DB adapter integrations (Neon/Supabase/Pinecone/Qdrant/Chroma)
+pip install turborag[adapters]
+
+# Everything + adapter integrations
+pip install turborag[all,adapters]
+
 # With local embedding support (sentence-transformers)
 pip install turborag[embed]
 
@@ -65,6 +71,7 @@ pip install -e '.[all,dev]'
 | *(core)* | numpy, scipy, click | Always installed |
 | `serve` | starlette, uvicorn | Running `turborag serve` (HTTP API) |
 | `mcp` | mcp | Running `turborag mcp` (MCP stdio server) |
+| `adapters` | psycopg, supabase, pinecone, qdrant-client, chromadb | Plug-and-play known DB integrations |
 | `embed` | sentence-transformers | Local text embedding with `--model` |
 | `graph` | networkx, leidenalg, python-igraph | Graph-augmented retrieval |
 | `ingest` | pdfminer.six, tiktoken | PDF extraction, token-aware chunking |
@@ -110,6 +117,12 @@ docker run -v ./my_index:/data/index turborag \
 
 ```bash
 pip install turborag
+```
+
+For `turborag adapt` with known backends, install:
+
+```bash
+pip install turborag[adapters]
 ```
 
 ### HTTP Service

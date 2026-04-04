@@ -18,9 +18,13 @@ The exact mapping from the PDF to current implementation status is documented in
 - Graph construction hooks with caching and persistence.
 - Hybrid retrieval scaffolding.
 - Compatibility adapters for sidecar adoption with existing RAG stacks.
+- Existing backend bridge for adapters and service hydration (`from_existing_backend`, `resolve_records_backend`).
+- Known backend helper builders for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- Adapter config persistence and CLI (`turborag adapt`) for plug-and-play backend binding.
 - Existing-embedding import/sync flow and sidecar CLI commands.
 - Benchmark harness, side-by-side baseline comparison, and local artifact generation flow.
 - HTTP sidecar service with CORS, metrics, request tracking, batch queries, and text ingestion.
+- Low-memory sidecar mode with optional ID-only query payloads and snapshot-load bypass.
 - MCP query, describe, and ingest tools over stdio.
 - Domain-specific exception hierarchy.
 - Docker packaging with multi-stage production build.

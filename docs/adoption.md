@@ -84,6 +84,34 @@ adapter = ExistingRAGAdapter.from_embeddings(
 results = adapter.query("What did the CFO say about capex guidance?", k=5)
 ```
 
+If you want TurboRAG to attach directly to an existing DB client shape, use:
+
+```python
+adapter = ExistingRAGAdapter.from_existing_backend(
+    embeddings=embeddings_matrix,
+    ids=ids,
+    query_embedder=embedder,
+    records_backend=existing_db_client,
+    bits=3,
+)
+```
+
+`records_backend` can be:
+
+- a callable `fetch_records(ids)`,
+- a mapping keyed by `chunk_id`,
+- or a client with `fetch(ids=...)`, `retrieve(ids=...)`, or `get(ids=...)`.
+
+For known databases and services, use ready-made backend builders in
+`turborag.adapters.backends`:
+
+- `build_postgres_fetch_records(...)` (works for Postgres/Neon/Supabase Postgres)
+- `build_neon_fetch_records(...)`
+- `build_supabase_fetch_records(...)` (supabase-py client)
+- `build_pinecone_fetch_records(...)`
+- `build_qdrant_fetch_records(...)`
+- `build_chroma_fetch_records(...)`
+
 ## Fast Trial Path With The CLI
 
 If your team already has an embedding export, the fastest proof-of-value path is:
@@ -93,7 +121,139 @@ turborag import-existing-index --input ./dataset.jsonl --index ./turborag_sideca
 turborag query --index ./turborag_sidecar --query-vector '[0.1, 0.2, 0.3]' --top-k 5
 ```
 
+To return compact ID-only results (lowest memory), add `--ids-only`:
+
+```bash
+turborag query --index ./turborag_sidecar --query-vector '[0.1, 0.2, 0.3]' --top-k 5 --ids-only
+```
+
 That path is documented in [docs/import-existing.md](file:///Users/ratnamshah/turborag/docs/import-existing.md).
+
+## Plug-And-Play Adapter CLI
+
+Use `turborag adapt` to configure known backends once, then just run `turborag serve`.
+
+Fastest path (auto-detect from your environment):
+
+```bash
+turborag adapt --index ./turborag_sidecar
+```
+
+If you're already inside the index directory, even shorter:
+
+```bash
+cd ./turborag_sidecar
+turborag adapt
+```
+
+If multiple backend envs are present, force one explicitly:
+
+```bash
+turborag adapt --index ./turborag_sidecar --backend supabase
+```
+
+You can use dedicated commands directly:
+
+- `turborag adapt supabase --index ./turborag_sidecar`
+- `turborag adapt neon --index ./turborag_sidecar`
+- `turborag adapt pinecone --index ./turborag_sidecar`
+- `turborag adapt qdrant --index ./turborag_sidecar`
+- `turborag adapt chroma --index ./turborag_sidecar`
+
+These commands auto-detect common env vars and store references like `${SUPABASE_URL}`
+in `adapter.json`, so secrets stay in your environment.
+
+### Configure Neon
+
+```bash
+export DATABASE_URL='postgresql://user:pass@host/db'
+
+turborag adapt set neon \
+  --index ./turborag_sidecar \
+  --option dsn=${DATABASE_URL} \
+  --option table=public.chunks
+```
+
+### Configure Supabase (Python client path)
+
+```bash
+export SUPABASE_URL='https://xyz.supabase.co'
+export SUPABASE_KEY='...'
+
+turborag adapt set supabase \
+  --index ./turborag_sidecar \
+  --option url=${SUPABASE_URL} \
+  --option key=${SUPABASE_KEY} \
+  --option table=chunks
+```
+
+Shortcut form (preferred):
+
+```bash
+export SUPABASE_URL='https://xyz.supabase.co'
+export SUPABASE_KEY='...'
+
+turborag adapt supabase --index ./turborag_sidecar
+```
+
+### Configure Pinecone
+
+```bash
+export PINECONE_API_KEY='...'
+
+turborag adapt set pinecone \
+  --index ./turborag_sidecar \
+  --option api_key=${PINECONE_API_KEY} \
+  --option index_name=my-index \
+  --option namespace=prod
+```
+
+Shortcut form:
+
+```bash
+export PINECONE_API_KEY='...'
+export PINECONE_INDEX_NAME='my-index'
+
+turborag adapt pinecone --index ./turborag_sidecar
+```
+
+### Configure Qdrant
+
+```bash
+turborag adapt set qdrant \
+  --index ./turborag_sidecar \
+  --option url=http://localhost:6333 \
+  --option collection_name=chunks
+```
+
+Shortcut form:
+
+```bash
+export QDRANT_URL='http://localhost:6333'
+turborag adapt qdrant --index ./turborag_sidecar
+```
+
+### Configure Chroma
+
+```bash
+turborag adapt set chroma \
+  --index ./turborag_sidecar \
+  --option path=./chroma \
+  --option collection_name=chunks
+```
+
+### Show / Remove config
+
+```bash
+turborag adapt show --index ./turborag_sidecar
+turborag adapt remove --index ./turborag_sidecar
+```
+
+Need a template command quickly?
+
+```bash
+turborag adapt demo supabase
+```
 
 ## Run The Sidecar Over HTTP
 
@@ -103,12 +263,26 @@ If you want to keep TurboRAG out of your application process, expose the sidecar
 turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080
 ```
 
+For external-DB hydration and lower memory startup, disable local snapshot loading:
+
+```bash
+turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080 --no-load-snapshot
+```
+
 Then query it with the same sidecar snapshot:
 
 ```bash
 curl -X POST http://localhost:8080/query \
   -H 'content-type: application/json' \
   -d '{"query_vector":[0.1,0.2,0.3],"top_k":5}'
+```
+
+For ID-only response payloads:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
 ```
 
 If you start the service with `--model`, it can also accept `query_text` payloads.
@@ -159,6 +333,72 @@ For LangChain-style code, use [src/turborag/adapters/langchain.py](file:///Users
 - `similarity_search(...)`
 - `similarity_search_with_score(...)`
 - `as_retriever()`
+
+## Known Database Examples
+
+### Neon / Postgres
+
+```python
+from turborag.adapters.backends import build_neon_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+fetch_records = build_neon_fetch_records(
+    dsn="postgresql://user:pass@host/db",
+    table="public.chunks",
+    id_column="chunk_id",
+    text_column="text",
+)
+
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=embeddings_matrix,
+    ids=ids,
+    query_embedder=embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+```
+
+### Supabase (Python client)
+
+```python
+from supabase import create_client
+from turborag.adapters.backends import build_supabase_fetch_records
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+fetch_records = build_supabase_fetch_records(supabase, table="chunks")
+```
+
+### Pinecone
+
+```python
+from pinecone import Pinecone
+from turborag.adapters.backends import build_pinecone_fetch_records
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index("your-index")
+fetch_records = build_pinecone_fetch_records(index, namespace="prod")
+```
+
+### Qdrant
+
+```python
+from qdrant_client import QdrantClient
+from turborag.adapters.backends import build_qdrant_fetch_records
+
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+fetch_records = build_qdrant_fetch_records(client, collection_name="chunks")
+```
+
+### Chroma
+
+```python
+import chromadb
+from turborag.adapters.backends import build_chroma_fetch_records
+
+chroma = chromadb.PersistentClient(path="./chroma")
+collection = chroma.get_collection("chunks")
+fetch_records = build_chroma_fetch_records(collection)
+```
 
 ## What Changes In Application Code
 

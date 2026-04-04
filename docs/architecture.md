@@ -50,6 +50,10 @@ Implements `HybridRetriever`.
 Implements the adoption layer for existing RAG systems.
 
 - `ExistingRAGAdapter` lets TurboRAG reuse an application's current chunk IDs and metadata store.
+- `resolve_records_backend(...)` adapts common existing DB client shapes (`fetch/retrieve/get`) into TurboRAG's hydration callback.
+- `ExistingRAGAdapter.from_existing_backend(...)` binds TurboRAG directly on top of existing backends without schema migration.
+- `adapters.backends` includes known backend builders for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- `adapters.config` provides persisted adapter config loading so service/ingest can run in plug-and-play mode.
 - `TurboVectorStore` exposes familiar vector-store-like methods such as `from_texts`, `from_existing_records`, and `similarity_search`.
 - This is the main path for adopting TurboRAG without changing the current database schema.
 
@@ -88,6 +92,8 @@ Implements the HTTP deployment surface over an existing sidecar index.
 - Exposes health and index metadata endpoints.
 - Accepts vector queries and optional text queries when a query embedder is configured.
 - Supports incremental embedding-level ingest that appends to the existing sidecar and refreshes the record snapshot.
+- Supports ID-only retrieval responses (`hydrate=false`) for low-memory sidecar operation over external DBs.
+- Supports startup without snapshot load (`load_snapshot=False`) while still serving ranked IDs from compressed vectors.
 
 ### `turborag.mcp_server`
 

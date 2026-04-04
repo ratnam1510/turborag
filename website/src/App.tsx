@@ -276,11 +276,11 @@ function Hero() {
                   <CopyButton text="pip install turborag" className="hero__install-copy" />
                 </div>
               </div>
-              
-              <Link to="/docs" className="hero__cta">
-                Read the Docs
-              </Link>
             </div>
+            
+            <Link to="/docs" className="hero__docs-link">
+              Read the Docs <span className="hero__docs-arrow">&rarr;</span>
+            </Link>
           </Reveal>
         </div>
         
@@ -655,6 +655,33 @@ function Architecture() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI Agent Prompt
+// ─────────────────────────────────────────────────────────────────────────────
+
+function AIAgentPrompt() {
+  const prompt = `Implement TurboRAG in my project. Read https://turborag.jpdz.app/llms.txt first, then analyze my codebase and integrate it.`
+
+  return (
+    <section className="ai-agent-section">
+      <Container>
+        <div className="ai-agent-banner">
+          <div className="ai-agent-banner__content">
+            <span className="ai-agent-banner__badge">AI Agents</span>
+            <p className="ai-agent-banner__text">
+              Give this prompt to your AI coding agent to integrate TurboRAG automatically
+            </p>
+          </div>
+          <div className="ai-agent-banner__prompt">
+            <code className="ai-agent-banner__code">{prompt}</code>
+            <CopyButton text={prompt} className="ai-agent-banner__copy" />
+          </div>
+        </div>
+      </Container>
+    </section>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Documentation Links (Home page)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -759,6 +786,9 @@ pip install turborag[serve]
 # With MCP agent server
 pip install turborag[mcp]
 
+# With known DB adapter integrations (Neon/Supabase/Pinecone/Qdrant/Chroma)
+pip install turborag[adapters]
+
 # With local embedding support (sentence-transformers)
 pip install turborag[embed]
 
@@ -770,6 +800,9 @@ pip install turborag[ingest]
 
 # Everything
 pip install turborag[all]
+
+# Everything + adapter integrations
+pip install turborag[all,adapters]
 
 # Everything + dev/test dependencies
 pip install turborag[all,dev]
@@ -787,6 +820,7 @@ pip install -e .
 # With specific extras
 pip install -e '.[serve]'
 pip install -e '.[mcp]'
+pip install -e '.[adapters]'
 
 # Everything
 pip install -e '.[all]'
@@ -807,6 +841,7 @@ pip install -e '.[all,dev]'
 | *(core)* | numpy, scipy, click | Always installed |
 | \`serve\` | starlette, uvicorn | Running \`turborag serve\` (HTTP API) |
 | \`mcp\` | mcp | Running \`turborag mcp\` (MCP stdio server) |
+| \`adapters\` | psycopg, supabase, pinecone, qdrant-client, chromadb | Plug-and-play known DB integrations |
 | \`embed\` | sentence-transformers | Local text embedding with \`--model\` |
 | \`graph\` | networkx, leidenalg, python-igraph | Graph-augmented retrieval |
 | \`ingest\` | pdfminer.six, tiktoken | PDF extraction, token-aware chunking |
@@ -840,6 +875,34 @@ docker run -p 8080:8080 -v ./my_index:/data/index turborag \\
 
 # Run MCP server over stdio
 docker run -i turborag turborag mcp --index /data/index
+\`\`\`
+
+## What Each Component Needs
+
+### CLI (import, query, describe, benchmark)
+
+\`\`\`bash
+pip install turborag
+\`\`\`
+
+For \`turborag adapt\` with known backends:
+
+\`\`\`bash
+pip install turborag[adapters]
+\`\`\`
+
+### HTTP Service
+
+\`\`\`bash
+pip install turborag[serve]
+turborag serve --index ./my_index --host 0.0.0.0 --port 8080
+\`\`\`
+
+### MCP Server (Claude Desktop, agent integration)
+
+\`\`\`bash
+pip install turborag[mcp]
+turborag mcp --index ./my_index
 \`\`\``
   },
   'architecture': {
@@ -891,6 +954,26 @@ Implements \`HybridRetriever\`.
 - Expands graph paths with breadth-first search.
 - Merges dense and graph candidates and emits explanations.
 
+### \`turborag.adapters\`
+
+Implements the adoption layer for existing RAG systems.
+
+- \`ExistingRAGAdapter\` lets TurboRAG reuse an application's current chunk IDs and metadata store.
+- \`resolve_records_backend(...)\` adapts common existing DB client shapes into TurboRAG's hydration callback.
+- \`ExistingRAGAdapter.from_existing_backend(...)\` binds TurboRAG directly on top of existing backends.
+- \`adapters.backends\` includes known backend builders for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- \`adapters.config\` provides persisted adapter config loading for plug-and-play mode.
+- \`TurboVectorStore\` exposes familiar vector-store-like methods.
+
+### \`turborag.service\`
+
+Implements the HTTP deployment surface.
+
+- Exposes health and index metadata endpoints.
+- Accepts vector queries and optional text queries.
+- Supports ID-only retrieval responses (\`hydrate=false\`) for low-memory sidecar operation.
+- Supports startup without snapshot load (\`load_snapshot=False\`).
+
 ## Storage Layout
 
 Saved indexes follow this layout:
@@ -901,6 +984,7 @@ index/
   records.jsonl
   rotation.npy
   sketch.bin
+  adapter.json (optional)
   shards/
     shard_000.bin
     shard_000.ids.json
@@ -920,7 +1004,8 @@ TurboRAG supports three search modes: \`auto\` (default), \`exact\`, and \`fast\
    - \`fast\`: Use POPCNT Hamming distance to pre-filter, then refine with LUT.
    - \`auto\`: Select based on index size.
 6. Merge top candidates across shards.
-7. Return structured results.`
+7. If running through an adapter, hydrate from existing application record store.
+8. Return structured results.`
   },
   'benchmarking': {
     title: 'Benchmarking',
@@ -1025,11 +1110,99 @@ adapter = ExistingRAGAdapter.from_embeddings(
 results = adapter.query("What did the CFO say about capex guidance?", k=5)
 \`\`\`
 
+## Plug-And-Play Adapter CLI
+
+Use \`turborag adapt\` to configure known backends once, then just run \`turborag serve\`.
+
+\`\`\`bash
+# Auto-detect from environment
+turborag adapt --index ./turborag_sidecar
+
+# Force a specific backend
+turborag adapt --index ./turborag_sidecar --backend supabase
+
+# Dedicated backend commands
+turborag adapt supabase --index ./turborag_sidecar
+turborag adapt neon --index ./turborag_sidecar
+turborag adapt pinecone --index ./turborag_sidecar
+turborag adapt qdrant --index ./turborag_sidecar
+turborag adapt chroma --index ./turborag_sidecar
+\`\`\`
+
+## Known Database Examples
+
+### Neon / Postgres
+
+\`\`\`python
+from turborag.adapters.backends import build_neon_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+fetch_records = build_neon_fetch_records(
+    dsn="postgresql://user:pass@host/db",
+    table="public.chunks",
+    id_column="chunk_id",
+    text_column="text",
+)
+
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=embeddings_matrix,
+    ids=ids,
+    query_embedder=embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+\`\`\`
+
+### Supabase
+
+\`\`\`python
+from supabase import create_client
+from turborag.adapters.backends import build_supabase_fetch_records
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+fetch_records = build_supabase_fetch_records(supabase, table="chunks")
+\`\`\`
+
+### Pinecone
+
+\`\`\`python
+from pinecone import Pinecone
+from turborag.adapters.backends import build_pinecone_fetch_records
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index("your-index")
+fetch_records = build_pinecone_fetch_records(index, namespace="prod")
+\`\`\`
+
+### Qdrant
+
+\`\`\`python
+from qdrant_client import QdrantClient
+from turborag.adapters.backends import build_qdrant_fetch_records
+
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+fetch_records = build_qdrant_fetch_records(client, collection_name="chunks")
+\`\`\`
+
+### Chroma
+
+\`\`\`python
+import chromadb
+from turborag.adapters.backends import build_chroma_fetch_records
+
+chroma = chromadb.PersistentClient(path="./chroma")
+collection = chroma.get_collection("chunks")
+fetch_records = build_chroma_fetch_records(collection)
+\`\`\`
+
 ## Fast Trial Path With The CLI
 
 \`\`\`bash
 turborag import-existing-index --input ./dataset.jsonl --index ./turborag_sidecar --bits 3
 turborag query --index ./turborag_sidecar --query-vector '[0.1, 0.2, 0.3]' --top-k 5
+
+# ID-only results (lowest memory)
+turborag query --index ./turborag_sidecar --query-vector '[0.1, 0.2, 0.3]' --top-k 5 --ids-only
 \`\`\`
 
 ## Migration Strategy
@@ -1067,6 +1240,21 @@ turborag serve \\
   --workers 4
 \`\`\`
 
+Low-memory sidecar mode (no local snapshot hydration):
+
+\`\`\`bash
+turborag serve \\
+  --index ./turborag_sidecar \\
+  --no-load-snapshot
+\`\`\`
+
+Plug-and-play backend mode using adapter config:
+
+\`\`\`bash
+turborag adapt --index ./turborag_sidecar
+turborag serve --index ./turborag_sidecar
+\`\`\`
+
 ## Endpoints
 
 ### \`GET /health\`
@@ -1075,7 +1263,11 @@ Returns a minimal readiness payload.
 
 ### \`GET /index\`
 
-Returns the sidecar configuration.
+Returns the sidecar configuration and hydration mode:
+
+- \`hydration_source\`: \`local_snapshot\`, \`external_backend\`, \`hybrid\`, or \`id_only\`
+- \`allow_unhydrated\`: whether unresolved hits are returned as ID-only results
+- \`text_query_enabled\`: whether \`query_text\` is enabled
 
 ### \`GET /metrics\`
 
@@ -1083,17 +1275,25 @@ Returns latency histograms and error counts.
 
 ### \`POST /query\`
 
-Accepts \`query_vector\` or \`query_text\`:
+Accepts \`query_vector\` or \`query_text\`.
+
+Optional: \`hydrate\` (boolean, default \`true\`) — when \`false\`, returns ID-only results.
 
 \`\`\`bash
+# Vector query
 curl -X POST http://localhost:8080/query \\
   -H 'content-type: application/json' \\
   -d '{"query_vector":[0.1,0.2,0.3],"top_k":5}'
+
+# ID-only response (hydrate in your existing DB)
+curl -X POST http://localhost:8080/query \\
+  -H 'content-type: application/json' \\
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
 \`\`\`
 
 ### \`POST /query/batch\`
 
-Batch multiple vector queries in a single request.
+Batch multiple vector queries in a single request. Supports \`"hydrate": false\`.
 
 ### \`POST /ingest\`
 
@@ -1109,7 +1309,8 @@ Ingest raw text with automatic chunking and embedding.
 - **Metrics**: Hit \`GET /metrics\` for latency histograms.
 - **Request tracking**: Pass \`X-Request-Id\` header.
 - **Structured logging**: Use \`--log-format json\`.
-- **Multi-worker**: Use \`--workers N\`.`
+- **Multi-worker**: Use \`--workers N\`.
+- **Strict hydration**: Use \`--require-hydrated\` to drop any hit that cannot be hydrated.`
   },
   'current-rag-rollout': {
     title: 'Current RAG Rollout',
@@ -1149,16 +1350,40 @@ TurboRAG replaces only the retrieval engine that ranks chunk IDs from embeddings
 
 ## Flow 2: HTTP Sidecar
 
+### One-time setup
+
+1. Export current embeddings and chunk IDs.
+2. Build a TurboRAG sidecar index.
+3. Configure adapter binding from environment (optional):
+
+\`\`\`bash
+turborag adapt --index ./turborag_sidecar
+\`\`\`
+
+4. Start the service:
+
 \`\`\`bash
 turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080
 \`\`\`
 
-Then query via HTTP:
+Memory-minimal startup (no snapshot hydration load):
 
 \`\`\`bash
+turborag serve --index ./turborag_sidecar --host 0.0.0.0 --port 8080 --no-load-snapshot
+\`\`\`
+
+### Query examples
+
+\`\`\`bash
+# Full hydrated response
 curl -X POST http://localhost:8080/query \\
   -H 'content-type: application/json' \\
   -d '{"query_vector":[0.1,0.2,0.3],"top_k":5}'
+
+# ID-only response (hydrate in your existing DB)
+curl -X POST http://localhost:8080/query \\
+  -H 'content-type: application/json' \\
+  -d '{"query_vector":[0.1,0.2,0.3],"top_k":5,"hydrate":false}'
 \`\`\`
 
 ## Rollout Phases
@@ -1183,6 +1408,19 @@ Make TurboRAG the retrieval layer.`
 
 Let a team with an already-running RAG stack build a TurboRAG sidecar from the embeddings and chunk records they already have.
 
+## Install
+
+\`\`\`bash
+# CLI import and query
+pip install turborag
+
+# With HTTP sidecar serving after import
+pip install turborag[serve]
+
+# With plug-and-play known DB adapters
+pip install turborag[adapters]
+\`\`\`
+
 ## Supported Import Formats
 
 ### JSONL
@@ -1204,6 +1442,8 @@ The \`.npz\` file must contain:
 
 ## CLI Flow
 
+### Import
+
 \`\`\`bash
 turborag import-existing-index \\
   --input ./dataset.jsonl \\
@@ -1211,10 +1451,38 @@ turborag import-existing-index \\
   --bits 3
 \`\`\`
 
+### Query by vector
+
 \`\`\`bash
 turborag query \\
   --index ./turborag_sidecar \\
   --query-vector '[0.1, 0.2, 0.3]' \\
+  --top-k 5
+\`\`\`
+
+### Configure existing DB adapter (one-time)
+
+\`\`\`bash
+turborag adapt --index ./turborag_sidecar
+\`\`\`
+
+### Query IDs only (no local hydration)
+
+\`\`\`bash
+turborag query \\
+  --index ./turborag_sidecar \\
+  --query-vector '[0.1, 0.2, 0.3]' \\
+  --top-k 5 \\
+  --ids-only
+\`\`\`
+
+### Query by text
+
+\`\`\`bash
+turborag query \\
+  --index ./turborag_sidecar \\
+  --query 'What changed in capex guidance?' \\
+  --model sentence-transformers/all-MiniLM-L6-v2 \\
   --top-k 5
 \`\`\`
 
@@ -1226,7 +1494,16 @@ from turborag.ingest import build_sidecar_index, load_dataset
 dataset = load_dataset("./dataset.jsonl")
 result = build_sidecar_index(dataset, "./turborag_sidecar", bits=3)
 print(result.index_path)
-\`\`\``
+\`\`\`
+
+## What Gets Written
+
+The sidecar directory contains:
+
+- the TurboRAG index files,
+- \`records.jsonl\` for local hydration when self-contained.
+
+When no snapshot is loaded, TurboRAG can still run as an ID-only sidecar.`
   },
   'spec-status': {
     title: 'Spec Status',
@@ -1320,6 +1597,160 @@ Even if request count stays the same, total spend can still go down if TurboRAG 
 - avoid retries and fallback prompts,
 - send less irrelevant context,
 - get acceptable quality with smaller prompts.`
+  },
+  'spec-decisions': {
+    title: 'Spec Decisions',
+    content: `# Spec Decisions
+
+This document records the places where the TurboQuant/QJL/PolarQuant papers left room for interpretation and the exact decisions used in this implementation.
+
+## Reference Papers
+
+- [TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026)
+- [Quantized Johnson-Lindenstrauss (QJL)](https://arxiv.org/abs/2406.03482) (AAAI 2025)
+- [PolarQuant](https://arxiv.org/abs/2502.02617) (AISTATS 2026)
+
+## 1. Quantization Strategy
+
+### Spec Tension
+
+The papers describe QJL, SRHT projection, sign quantization, and scalar min/max quantization with different tradeoffs.
+
+### Decision
+
+Implement rotated scalar quantization with fixed symmetric bounds.
+
+### Why
+
+- It is internally consistent.
+- It supports incremental indexing without having to re-encode older shards.
+- It keeps query-time and index-time calibration identical.
+- It is easy to test and reason about.
+
+## 2. Value Range
+
+### Spec Tension
+
+The pseudocode calibrates each batch with per-dimension min/max values, but query vectors need the same calibration to be comparable with stored vectors.
+
+### Decision
+
+Normalize vectors by default and quantize into a fixed range of \`[-1.0, 1.0]\`.
+
+### Why
+
+- Rotated unit vectors remain bounded.
+- The representation is stable across batches.
+- Incremental adds work naturally.
+
+## 3. Rotation Persistence
+
+### Spec Tension
+
+The narrative suggests storing only a seed and algorithm identifier, while the storage layout explicitly includes \`rotation.npy\`.
+
+### Decision
+
+Store both the seed and the concrete \`rotation.npy\` matrix.
+
+### Why
+
+- Loading is deterministic and exact.
+- The index file format is explicit.
+- It avoids regeneration differences across SciPy versions.
+
+## 4. Search Kernel
+
+### Spec Tension
+
+The PDF points toward a future SIMD or popcount-optimised kernel but also shows a dequantize-then-dot prototype.
+
+### Decision
+
+Start with the prototype dequantize-then-dot implementation, now upgraded to a LUT-based C kernel with fused byte-triplet acceleration.
+
+### Why
+
+- It is portable.
+- It establishes a correctness baseline.
+- The C kernel provides production-grade performance.
+
+## 5. Graph Dependencies
+
+### Spec Tension
+
+The graph layer is central to the long-term product, but the spec also argues for a lightweight core install.
+
+### Decision
+
+Keep graph dependencies optional and degrade gracefully when they are not installed.
+
+### Why
+
+- The core package remains light.
+- Dense retrieval remains useful on its own.
+- The architecture cleanly accommodates the graph layer.`
+  },
+  'implementation-plan': {
+    title: 'Implementation Plan',
+    content: `# Implementation Plan
+
+## Status Snapshot
+
+The exact mapping from the PDF to current implementation status is documented in the Spec Status page.
+
+### Implemented
+
+- Core package and packaging metadata.
+- Rotation generation.
+- Bit-packing quantization utilities.
+- LUT-based C scoring kernel with fused byte-triplet acceleration.
+- In-memory and on-disk compressed vector indexing.
+- Binary sketch head and adaptive two-stage search (auto/exact/fast modes).
+- Batch search and threaded shard scanning.
+- Token-aware chunking for PDF, markdown, and plain text.
+- Document ingestion with metadata propagation.
+- Graph construction hooks with caching and persistence.
+- Hybrid retrieval scaffolding.
+- Compatibility adapters for sidecar adoption with existing RAG stacks.
+- Known backend helpers for Postgres/Neon/Supabase, Pinecone, Qdrant, and Chroma.
+- Adapter config persistence and CLI (\`turborag adapt\`) for plug-and-play backend binding.
+- Existing-embedding import/sync flow and sidecar CLI commands.
+- Benchmark harness, side-by-side baseline comparison, and local artifact generation.
+- HTTP sidecar service with CORS, metrics, request tracking, batch queries, and text ingestion.
+- Low-memory sidecar mode with optional ID-only query payloads.
+- MCP query, describe, and ingest tools over stdio.
+- Domain-specific exception hierarchy.
+- Docker packaging with multi-stage production build.
+- Core documentation and test coverage (104+ tests).
+
+### Not Yet Implemented
+
+- Richer embedding model wrappers and provider integrations.
+- Cross-encoder reranking.
+- Deeper LangChain integration and a full LlamaIndex adapter.
+- Persisted graph/community storage and graph API surfaces.
+- Reproducible published benchmark artifacts on real external datasets.
+
+## Recommended Build Sequence
+
+### Phase 1 (Done)
+Stabilise the core numeric path: batch search, C scoring kernel, top-k optimisation.
+
+### Phase 2 (Done)
+Make ingestion real: token-aware chunking, PDF extraction, metadata store.
+
+### Phase 3 (Done)
+Production hardening: CORS, metrics, request ID tracking, multi-worker support, Docker.
+
+### Phase 4 (Mostly Done)
+Deepen graph retrieval and distribution: raw-text ingest, MCP ingest tool, adapters.
+
+### Phase 5 (Done)
+Adaptive search and sketch head: binary SimHash, POPCNT pre-filtering, auto/exact/fast modes.
+
+### Phase 6
+Proof and positioning: publish real-world benchmarks, example notebooks, TestPyPI release.`
   }
 }
 
@@ -1368,6 +1799,8 @@ const docsSidebar = [
     { title: 'Benchmarking', slug: 'benchmarking' },
     { title: 'LLM Request Model', slug: 'llm-request-model' },
     { title: 'Spec Status', slug: 'spec-status' },
+    { title: 'Spec Decisions', slug: 'spec-decisions' },
+    { title: 'Implementation Plan', slug: 'implementation-plan' },
   ]},
 ]
 
@@ -1494,6 +1927,7 @@ function HomePage() {
   return (
     <>
       <Hero />
+      <AIAgentPrompt />
       <Features />
       <Performance />
       <Pipeline />

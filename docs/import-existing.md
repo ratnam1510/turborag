@@ -16,6 +16,9 @@ pip install turborag
 
 # With HTTP sidecar serving after import
 pip install turborag[serve]
+
+# With plug-and-play known DB adapters
+pip install turborag[adapters]
 ```
 
 ### From Source
@@ -86,6 +89,30 @@ turborag query \
   --top-k 5
 ```
 
+### Configure Existing DB Adapter (One-Time)
+
+If your app hydrates from an existing database, configure adapter auto mode once:
+
+```bash
+turborag adapt --index ./turborag_sidecar
+```
+
+You can force a backend when needed:
+
+```bash
+turborag adapt --index ./turborag_sidecar --backend supabase
+```
+
+### Query IDs Only (No Local Hydration)
+
+```bash
+turborag query \
+  --index ./turborag_sidecar \
+  --query-vector '[0.1, 0.2, 0.3]' \
+  --top-k 5 \
+  --ids-only
+```
+
 ### Query By Text With A Local Sentence-Transformers Model
 
 ```bash
@@ -114,3 +141,5 @@ The sidecar directory contains:
 - `records.jsonl` for local hydration when you want the sidecar to be self-contained.
 
 If you do not want TurboRAG to write a local record snapshot, disable it during import and keep using your existing database resolver in application code.
+
+When no snapshot is loaded, TurboRAG can still run as an ID-only sidecar over the same chunk IDs.
