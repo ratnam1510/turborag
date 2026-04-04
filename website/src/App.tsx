@@ -511,7 +511,7 @@ function Pipeline() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Quickstart() {
-  const [activeTab, setActiveTab] = useState<'python' | 'cli' | 'docker'>('python')
+  const [activeTab, setActiveTab] = useState<'python' | 'nodejs' | 'cli' | 'docker'>('python')
 
   const code = {
     python: `import numpy as np
@@ -529,6 +529,29 @@ index.add(vectors, ids)
 results = index.search(vectors[0], k=10)
 for chunk_id, score in results:
     print(f"{chunk_id}: {score:.4f}")`,
+
+    nodejs: `import { TurboRAG } from 'turborag';
+
+// Connect to TurboRAG server
+const client = new TurboRAG('http://localhost:8080');
+
+// Query with vector
+const results = await client.query({
+  queryVector: new Float32Array(128).fill(0.1),
+  topK: 10
+});
+
+// Or query with text (auto-embeds)
+const textResults = await client.queryText({
+  text: 'What is machine learning?',
+  topK: 5
+});
+
+// Batch queries for high throughput
+const batchResults = await client.queryBatch({
+  queries: [vector1, vector2, vector3],
+  topK: 10
+});`,
 
     cli: `# Install
 pip install turborag[all]
@@ -568,15 +591,13 @@ curl http://localhost:8080/health`
               From zero to search<br />in minutes
             </h2>
             <p className="section__subtitle">
-              TurboRAG ships as a single Python package with optional extras 
+              TurboRAG ships as a Python package and Node.js client 
               for graph retrieval, HTTP serving, and MCP integration.
             </p>
             
             <div className="extras-list">
-              <code>pip install turborag[graph]</code>
-              <code>pip install turborag[serve]</code>
-              <code>pip install turborag[mcp]</code>
               <code>pip install turborag[all]</code>
+              <code>npm install turborag</code>
             </div>
           </Reveal>
           
@@ -589,18 +610,18 @@ curl http://localhost:8080/health`
                   <span className="code-block__traffic-light code-block__traffic-light--green" />
                 </div>
                 <span className="code-block__title">
-                  {activeTab === 'python' ? 'example.py' : activeTab === 'cli' ? 'Terminal' : 'Dockerfile'}
+                  {activeTab === 'python' ? 'example.py' : activeTab === 'nodejs' ? 'example.ts' : activeTab === 'cli' ? 'Terminal' : 'Dockerfile'}
                 </span>
                 <CopyButton text={code[activeTab]} className="code-block__copy" />
               </div>
               <div className="code-block__tabs">
-                {(['python', 'cli', 'docker'] as const).map(tab => (
+                {(['python', 'nodejs', 'cli', 'docker'] as const).map(tab => (
                   <button
                     key={tab}
                     className={`code-block__tab ${activeTab === tab ? 'code-block__tab--active' : ''}`}
                     onClick={() => setActiveTab(tab)}
                   >
-                    {tab === 'cli' ? 'CLI' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    {tab === 'cli' ? 'CLI' : tab === 'nodejs' ? 'Node.js' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                   </button>
                 ))}
               </div>

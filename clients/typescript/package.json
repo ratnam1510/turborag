@@ -23,7 +23,7 @@
     "llm"
   ],
   "author": "Ratnam Shah",
-  "license": "Proprietary",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ratnam1510/turborag",
