@@ -1,0 +1,10 @@
+{
+  "dim": 384,
+  "bits": 3,
+  "seed": 42,
+  "shard_size": 100000,
+  "normalize": true,
+  "value_range": 1.0,
+  "schema_version": 1,
+  "size": 100400
+}

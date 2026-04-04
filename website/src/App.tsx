@@ -709,11 +709,11 @@ function AIAgentPrompt() {
 function DocumentationLinks() {
   const docs = [
     { title: 'Installation', description: 'Setup and installation options', slug: 'installation' },
+    { title: 'Client SDKs', description: 'Node.js, Go, Ruby clients', slug: 'client-sdks' },
     { title: 'Architecture', description: 'System design and components', slug: 'architecture' },
     { title: 'Benchmarking', description: 'Performance testing guide', slug: 'benchmarking' },
     { title: 'Adoption Guide', description: 'Integration strategies', slug: 'adoption' },
     { title: 'Service API', description: 'HTTP endpoints reference', slug: 'service' },
-    { title: 'RAG Rollout', description: 'Production deployment', slug: 'current-rag-rollout' },
   ]
 
   return (
@@ -924,7 +924,41 @@ turborag serve --index ./my_index --host 0.0.0.0 --port 8080
 \`\`\`bash
 pip install turborag[mcp]
 turborag mcp --index ./my_index
-\`\`\``
+\`\`\`
+
+## Node.js / TypeScript Client
+
+For Node.js and TypeScript applications, install the official client from npm:
+
+\`\`\`bash
+npm install turborag
+\`\`\`
+
+The client connects to a running TurboRAG HTTP server:
+
+\`\`\`typescript
+import { TurboRAG } from 'turborag';
+
+const client = new TurboRAG('http://localhost:8080');
+
+// Query with vector
+const results = await client.query({
+  queryVector: new Float32Array(128),
+  topK: 10
+});
+
+// Query with text (auto-embeds server-side)
+const textResults = await client.queryText({
+  text: 'What is machine learning?',
+  topK: 5
+});
+\`\`\`
+
+Requirements:
+- Node.js >= 18.0.0
+- A running TurboRAG HTTP server (\`pip install turborag[serve]\`)
+
+See the [Service documentation](/docs/service) for server setup.`
   },
   'architecture': {
     title: 'Architecture',
@@ -1772,6 +1806,267 @@ Adaptive search and sketch head: binary SimHash, POPCNT pre-filtering, auto/exac
 
 ### Phase 6
 Proof and positioning: publish real-world benchmarks, example notebooks, TestPyPI release.`
+  },
+  'client-sdks': {
+    title: 'Client SDKs',
+    content: `# Client SDKs
+
+Language-agnostic clients for the TurboRAG HTTP API. Each is a thin typed wrapper with zero external dependencies.
+
+## Available Clients
+
+| Language | Package | Install | Dependencies |
+|---|---|---|---|
+| **Python** | \`turborag\` | \`pip install turborag\` | numpy, scipy |
+| **Node.js / TypeScript** | \`turborag\` | \`npm install turborag\` | None (native fetch) |
+| **Go** | \`turborag\` | \`go get github.com/ratnam1510/turborag/clients/go\` | None (net/http) |
+| **Ruby** | \`turborag\` | \`gem install turborag\` | None (net/http) |
+
+All clients talk to the same HTTP API — start a server with:
+
+\`\`\`bash
+# Docker (no Python needed)
+docker run -p 8080:8080 -v ./my_index:/data/index turborag \\
+  turborag serve --index /data/index --host 0.0.0.0
+
+# Or pip
+pip install turborag[serve]
+turborag serve --index ./my_index --port 8080
+\`\`\`
+
+## Node.js / TypeScript
+
+\`\`\`bash
+npm install turborag
+\`\`\`
+
+\`\`\`typescript
+import { TurboRAG } from "turborag";
+
+const client = new TurboRAG("http://localhost:8080");
+
+// Query by vector
+const { results } = await client.query({
+  vector: [0.1, 0.2, 0.3],
+  topK: 5,
+});
+
+// Query IDs only (application hydrates from existing DB)
+const idOnly = await client.queryIds({
+  vector: [0.1, 0.2, 0.3],
+  topK: 5,
+});
+
+// Query by text (requires --model on the server)
+const textResults = await client.queryText({
+  text: "What changed in capex guidance?",
+  topK: 5,
+});
+
+// Batch query
+const batch = await client.queryBatch({
+  queries: [
+    { vector: [0.1, 0.2, 0.3] },
+    { vector: [0.4, 0.5, 0.6] },
+  ],
+  topK: 5,
+});
+
+// Ingest records
+await client.ingest({
+  records: [
+    {
+      chunk_id: "c1",
+      text: "Capital expenditure guidance increased.",
+      embedding: [0.1, 0.2, 0.3],
+      source_doc: "q3_call.pdf",
+    },
+  ],
+});
+
+// Health & metrics
+const health = await client.health();
+const info = await client.index();
+const metrics = await client.metrics();
+\`\`\`
+
+### TypeScript API
+
+| Method | Description |
+|---|---|
+| \`query({ vector, topK, hydrate })\` | Search by embedding vector |
+| \`queryIds({ vector, topK })\` | Search returning IDs only |
+| \`queryText({ text, topK })\` | Search by text (requires \`--model\`) |
+| \`queryBatch({ queries, topK })\` | Batch vector search |
+| \`queryBatchIds({ queries, topK })\` | Batch search with ID-only hits |
+| \`ingest({ records })\` | Add records with embeddings |
+| \`ingestText({ text, sourceDoc })\` | Ingest raw text |
+| \`health()\` | Health check |
+| \`index()\` | Index config and stats |
+| \`metrics()\` | Latency and error metrics |
+
+## Go
+
+\`\`\`bash
+go get github.com/ratnam1510/turborag/clients/go
+\`\`\`
+
+\`\`\`go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	turborag "github.com/ratnam1510/turborag/clients/go"
+)
+
+func main() {
+	client := turborag.New("http://localhost:8080")
+	ctx := context.Background()
+
+	// Query by vector
+	results, err := client.Query(ctx, []float64{0.1, 0.2, 0.3}, 5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range results.Results {
+		fmt.Printf("%s  %.4f  %s\\n", r.ChunkID, r.Score, r.Text)
+	}
+
+	// Query by text (requires --model)
+	textResults, err := client.QueryText(ctx, "What changed?", 5)
+
+	// Batch query
+	batch, err := client.QueryBatch(ctx, [][]float64{
+		{0.1, 0.2, 0.3},
+		{0.4, 0.5, 0.6},
+	}, 5)
+
+	// Health & info
+	health, _ := client.Health(ctx)
+	info, _ := client.Index(ctx)
+	fmt.Println(health.Status, info.IndexSize)
+}
+\`\`\`
+
+### Go API
+
+| Method | Description |
+|---|---|
+| \`Query(ctx, vector, topK)\` | Search by embedding vector |
+| \`QueryText(ctx, text, topK)\` | Search by text (requires \`--model\`) |
+| \`QueryBatch(ctx, vectors, topK)\` | Batch vector search |
+| \`Ingest(ctx, records)\` | Add records with embeddings |
+| \`IngestText(ctx, text, sourceDoc)\` | Ingest raw text |
+| \`Health(ctx)\` | Health check |
+| \`Index(ctx)\` | Index config and stats |
+
+## Ruby
+
+\`\`\`bash
+gem install turborag
+\`\`\`
+
+\`\`\`ruby
+require "turborag"
+
+client = TurboRAG::Client.new("http://localhost:8080")
+
+# Query by vector
+results = client.query(vector: [0.1, 0.2, 0.3], top_k: 5)
+results["results"].each do |r|
+  puts "#{r["chunk_id"]}  #{r["score"]}  #{r["text"]}"
+end
+
+# Query by text (requires --model)
+results = client.query_text(text: "What changed?", top_k: 5)
+
+# Batch query
+batch = client.query_batch(
+  queries: [{ vector: [0.1, 0.2, 0.3] }, { vector: [0.4, 0.5, 0.6] }],
+  top_k: 5
+)
+
+# Ingest
+client.ingest(records: [
+  {
+    chunk_id: "c1",
+    text: "Capital expenditure guidance increased.",
+    embedding: [0.1, 0.2, 0.3],
+    source_doc: "q3_call.pdf",
+  }
+])
+
+# Health & metrics
+health = client.health
+info = client.index
+metrics = client.metrics
+\`\`\`
+
+### Ruby API
+
+| Method | Description |
+|---|---|
+| \`query(vector:, top_k:)\` | Search by embedding vector |
+| \`query_text(text:, top_k:)\` | Search by text (requires \`--model\`) |
+| \`query_batch(queries:, top_k:)\` | Batch vector search |
+| \`ingest(records:)\` | Add records with embeddings |
+| \`ingest_text(text:, source_doc:)\` | Ingest raw text |
+| \`health\` | Health check |
+| \`index\` | Index config and stats |
+| \`metrics\` | Latency and error metrics |
+
+## Benchmarks
+
+Performance benchmarks against a **100K vector index** (384 dimensions, 3-bit quantization).
+
+### Memory Usage (The Key Metric)
+
+| Metric | Value |
+|---|---|
+| **Float32 baseline** | 146.5 MB |
+| **TurboRAG index** | 14.3 MB |
+| **Compression ratio** | **10.7x** |
+| **Memory savings** | **91%** |
+
+The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead). The actual compressed index uses only **14.3 MB** for 100K vectors.
+
+### Client Memory Footprint
+
+| Client | Max Heap | Max RSS |
+|---|---|---|
+| **Node.js / TypeScript** | 11.3 MB | 96.8 MB |
+| **Ruby** | — | 30.6 MB |
+
+### Query Performance
+
+| Client | Single Query | Batch (50) | Ingest |
+|---|---|---|---|
+| **Node.js** | 30.7 QPS (32.6ms) | 5.7 QPS | 1,307 rec/s |
+| **Ruby** | 25.8 QPS (38.8ms) | 6.3 QPS | 1,013 rec/s |
+
+> **Why this matters**: TurboRAG achieves **10x memory compression** while maintaining high recall (0.975+). Client choice has minimal impact — the server handles the heavy lifting. All clients use native HTTP with zero external dependencies.
+
+### Run Your Own Benchmarks
+
+\`\`\`bash
+# TypeScript (includes memory tracking)
+cd clients/typescript && npm run benchmark
+
+# Ruby (includes memory tracking)
+cd clients/ruby && ruby benchmark.rb
+\`\`\`
+
+## Adding A New Language
+
+Each client is ~100 lines wrapping \`POST\`/\`GET\` with JSON serialization. To add a new language:
+
+1. Create \`clients/<language>/\`
+2. Implement the 7 API methods above
+3. Use native HTTP — no external dependencies
+4. Match the type signatures from the TypeScript client`
   }
 }
 
@@ -1808,6 +2103,7 @@ function DocsCodeBlock({ children, className }: { children: string; className?: 
 const docsSidebar = [
   { section: 'Getting Started', items: [
     { title: 'Installation', slug: 'installation' },
+    { title: 'Client SDKs', slug: 'client-sdks' },
     { title: 'Architecture', slug: 'architecture' },
   ]},
   { section: 'Guides', items: [

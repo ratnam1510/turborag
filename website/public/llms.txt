@@ -466,6 +466,154 @@ try {
 
 ---
 
+## Go Client
+
+TurboRAG provides a Go client for backend services. Zero dependencies — uses stdlib `net/http`.
+
+### Installation
+
+```bash
+go get github.com/ratnam1510/turborag/clients/go
+```
+
+### Basic Usage
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	turborag "github.com/ratnam1510/turborag/clients/go"
+)
+
+func main() {
+	client := turborag.New("http://localhost:8080")
+	ctx := context.Background()
+
+	// Query by vector
+	results, err := client.Query(ctx, []float64{0.1, 0.2, 0.3}, 5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range results.Results {
+		fmt.Printf("%s  %.4f  %s\n", r.ChunkID, r.Score, r.Text)
+	}
+
+	// Query by text (requires --model)
+	textResults, err := client.QueryText(ctx, "What changed in capex guidance?", 5)
+
+	// Batch query
+	batch, err := client.QueryBatch(ctx, [][]float64{
+		{0.1, 0.2, 0.3},
+		{0.4, 0.5, 0.6},
+	}, 5)
+
+	// Ingest
+	_, err = client.Ingest(ctx, []turborag.IngestRecord{
+		{
+			ChunkID:   "c1",
+			Text:      "Capital expenditure guidance increased.",
+			Embedding: []float64{0.1, 0.2, 0.3},
+			SourceDoc: "q3_call.pdf",
+		},
+	})
+
+	// Health & info
+	health, _ := client.Health(ctx)
+	info, _ := client.Index(ctx)
+	fmt.Println(health.Status, info.IndexSize)
+}
+```
+
+### Go API Reference
+
+| Method | Description |
+|--------|-------------|
+| `Query(ctx, vector, topK)` | Search by embedding vector |
+| `QueryText(ctx, text, topK)` | Search by text (requires `--model`) |
+| `QueryBatch(ctx, vectors, topK)` | Batch vector search |
+| `Ingest(ctx, records)` | Add records with embeddings |
+| `IngestText(ctx, text, sourceDoc)` | Ingest raw text |
+| `Health(ctx)` | Health check |
+| `Index(ctx)` | Index config and stats |
+
+---
+
+## Ruby Client
+
+TurboRAG provides a Ruby client for Rails and Sinatra apps. Zero dependencies — uses stdlib `net/http`.
+
+### Installation
+
+```bash
+gem install turborag
+```
+
+Or in your Gemfile:
+
+```ruby
+gem "turborag"
+```
+
+### Basic Usage
+
+```ruby
+require "turborag"
+
+client = TurboRAG::Client.new("http://localhost:8080")
+
+# Query by vector
+results = client.query(vector: [0.1, 0.2, 0.3], top_k: 5)
+results["results"].each do |r|
+  puts "#{r["chunk_id"]}  #{r["score"]}  #{r["text"]}"
+end
+
+# Query by text (requires --model)
+results = client.query_text(text: "What changed in capex guidance?", top_k: 5)
+
+# Batch query
+batch = client.query_batch(
+  queries: [{ vector: [0.1, 0.2, 0.3] }, { vector: [0.4, 0.5, 0.6] }],
+  top_k: 5
+)
+
+# Ingest
+client.ingest(records: [
+  {
+    chunk_id: "c1",
+    text: "Capital expenditure guidance increased.",
+    embedding: [0.1, 0.2, 0.3],
+    source_doc: "q3_call.pdf",
+  }
+])
+
+# Ingest raw text (auto-chunked, requires --model)
+client.ingest_text(text: "Full document text...", source_doc: "report.md")
+
+# Health & metrics
+health = client.health
+info = client.index
+metrics = client.metrics
+```
+
+### Ruby API Reference
+
+| Method | Description |
+|--------|-------------|
+| `query(vector:, top_k:)` | Search by embedding vector |
+| `query_text(text:, top_k:)` | Search by text (requires `--model`) |
+| `query_batch(queries:, top_k:)` | Batch vector search |
+| `ingest(records:)` | Add records with embeddings |
+| `ingest_text(text:, source_doc:)` | Ingest raw text |
+| `health` | Health check |
+| `index` | Index config and stats |
+| `metrics` | Latency and error metrics |
+
+---
+
 ## Plug-and-Play Adapter CLI
 
 Use `turborag adapt` to configure known backends once:
@@ -932,6 +1080,51 @@ pytest
 
 # Check C kernel
 python -c "from turborag._cscore_wrapper import is_available; print('C kernel:', 'available' if is_available() else 'fallback')"
+```
+
+---
+
+## Client SDK Benchmarks
+
+Performance benchmarks against a 100K vector index (384 dimensions, 3-bit quantization).
+
+### Memory Usage (The Key Metric)
+
+| Metric | Value |
+|--------|-------|
+| Float32 baseline | 146.5 MB |
+| TurboRAG index | 14.3 MB |
+| **Compression ratio** | **10.7x** |
+| **Memory savings** | **91%** |
+
+The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead).
+The actual compressed index uses only 14.3 MB for 100K vectors.
+
+### Client Memory Footprint
+
+| Client | Max Heap | Max RSS |
+|--------|----------|---------|
+| Node.js / TypeScript | 11.3 MB | 96.8 MB |
+| Ruby | — | 30.6 MB |
+
+### Query Performance
+
+| Client | Single Query | Batch (50) | Ingest |
+|--------|--------------|------------|--------|
+| Node.js | 30.7 QPS (32.6ms avg) | 5.7 QPS | 1,307 rec/s |
+| Ruby | 25.8 QPS (38.8ms avg) | 6.3 QPS | 1,013 rec/s |
+
+Why this matters: TurboRAG achieves 10x memory compression while maintaining high recall (0.975+).
+Client choice has minimal impact — the server handles the heavy lifting.
+
+### Run Benchmarks
+
+```bash
+# TypeScript (includes memory tracking)
+cd clients/typescript && npm run benchmark
+
+# Ruby (includes memory tracking)
+cd clients/ruby && ruby benchmark.rb
 ```
 
 ---
