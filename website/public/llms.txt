@@ -772,76 +772,224 @@ curl -X POST http://localhost:8080/ingest-text \
 
 ## CLI Reference
 
-### Import Existing Data
+All TurboRAG commands. Install with `pip install turborag`.
+
+### Global Options
 
 ```bash
-# From JSONL
-turborag import-existing-index \
-  --input ./dataset.jsonl \
-  --index ./turborag_sidecar \
-  --bits 3
+turborag [OPTIONS] COMMAND [ARGS]...
 
-# JSONL format (one record per line):
-# {"chunk_id": "c1", "text": "...", "embedding": [0.1, 0.2, ...]}
+Options:
+  --log-level [debug|info|warning|error|critical]  # Default: INFO
+  --log-format [text|json]                         # Default: text
+  --help
 ```
 
-### Query
+### turborag serve
+
+Start HTTP API server.
+
+```bash
+turborag serve --index ./my_index [OPTIONS]
+
+Options:
+  --index DIRECTORY       # Required - index path
+  --host TEXT             # Default: 127.0.0.1
+  --port INTEGER          # Default: 8080
+  --workers INTEGER       # Default: 1 - uvicorn workers
+  --model TEXT            # Sentence-transformers model for text queries
+  --cors-origins TEXT     # Default: * - comma-separated origins
+  --adapter-config FILE   # Path to adapter.json
+  --no-load-snapshot      # Don't load records.jsonl (use external DB)
+  --require-hydrated      # Drop hits that can't be hydrated
+```
+
+**Examples:**
+
+```bash
+# Basic server
+turborag serve --index ./my_index
+
+# Production with workers
+turborag serve --index ./my_index --host 0.0.0.0 --port 8080 --workers 4
+
+# With text queries
+turborag serve --index ./my_index --model all-MiniLM-L6-v2
+
+# Low-memory mode with external database
+turborag serve --index ./my_index --no-load-snapshot
+```
+
+### turborag query
+
+Query index from command line.
+
+```bash
+turborag query --index ./my_index [OPTIONS]
+
+Options:
+  --index DIRECTORY         # Required
+  --query TEXT              # Query text (requires --model)
+  --model TEXT              # Sentence-transformers model
+  --query-vector TEXT       # Inline JSON array
+  --query-vector-file FILE  # Path to JSON file
+  --top-k INTEGER           # Default: 5
+  --ids-only                # Return only chunk_id and score
+```
+
+**Examples:**
 
 ```bash
 # By vector
-turborag query \
-  --index ./my_index \
-  --query-vector '[0.1, 0.2, 0.3]' \
-  --top-k 5
+turborag query --index ./my_index --query-vector '[0.1, 0.2, 0.3]' --top-k 10
 
-# ID-only results (lowest memory)
-turborag query \
-  --index ./my_index \
-  --query-vector '[0.1, 0.2, 0.3]' \
-  --top-k 5 \
-  --ids-only
+# By text
+turborag query --index ./my_index --query "What is TurboRAG?" --model all-MiniLM-L6-v2
 
-# By text (requires embed extra)
-turborag query \
-  --index ./my_index \
-  --query 'What changed in capex guidance?' \
-  --model sentence-transformers/all-MiniLM-L6-v2 \
-  --top-k 5
+# ID-only (minimal memory)
+turborag query --index ./my_index --query-vector-file ./query.json --ids-only
 ```
 
-### Describe Index
+### turborag import-existing-index
+
+Build index from existing embeddings.
 
 ```bash
-turborag describe-index --index ./my_index
+turborag import-existing-index --input FILE --index PATH [OPTIONS]
+
+Options:
+  --input FILE             # Required - JSONL or NPZ file
+  --index PATH             # Required - output directory
+  --format [auto|jsonl|npz]  # Default: auto
+  --bits INTEGER           # Default: 3 - quantization bits (1-8)
+  --shard-size INTEGER     # Default: 100000
+  --seed INTEGER           # Default: 42
+  --no-normalize           # Disable vector normalization
+  --no-record-snapshot     # Skip writing records.jsonl
 ```
 
-### Benchmark
+**Input Format (JSONL):**
+
+```json
+{"chunk_id": "c1", "embedding": [0.1, ...], "text": "...", "source_doc": "file.pdf"}
+```
+
+### turborag adapt
+
+Configure database adapters.
 
 ```bash
-# TurboRAG only
-turborag benchmark \
-  --index ./my_index \
-  --queries ./queries.jsonl \
-  --k 10
+turborag adapt [OPTIONS] COMMAND
 
-# With baselines
-turborag benchmark \
-  --index ./my_index \
-  --queries ./queries.jsonl \
-  --dataset ./corpus.jsonl \
-  --baseline exact \
-  --baseline faiss-flat \
-  --baseline faiss-hnsw \
-  --k 10
+Options:
+  --index DIRECTORY        # Index path
+  --config FILE            # Config target path
+  --backend [postgres|neon|supabase|pinecone|qdrant|chroma]
+  --option TEXT            # Key=value overrides (repeatable)
+
+Subcommands:
+  supabase   Configure Supabase
+  pinecone   Configure Pinecone
+  qdrant     Configure Qdrant
+  chroma     Configure ChromaDB
+  neon       Configure Neon/Postgres
+  set        Create/update config
+  show       Show current config
+  remove     Remove config
+  demo       Print example command
 ```
 
-### MCP Server
+**Examples:**
+
+```bash
+# Auto-detect from environment
+turborag adapt --index ./my_index
+
+# Supabase
+turborag adapt supabase --index ./my_index \
+  --url "$SUPABASE_URL" --key "$SUPABASE_KEY" --table chunks
+
+# Pinecone
+turborag adapt pinecone --index ./my_index \
+  --api-key "$PINECONE_API_KEY" --index-name my-index
+
+# Qdrant
+turborag adapt qdrant --index ./my_index \
+  --url "http://localhost:6333" --collection-name chunks
+
+# Chroma
+turborag adapt chroma --index ./my_index \
+  --path ./chroma_db --collection-name chunks
+
+# Show/remove config
+turborag adapt show --index ./my_index
+turborag adapt remove --index ./my_index
+```
+
+### turborag mcp
+
+Start MCP server over stdio (for Claude Desktop).
 
 ```bash
 turborag mcp --index ./my_index
 ```
 
-Tools exposed: `turborag_query`, `turborag_describe`, `turborag_ingest`
+Requires: `pip install turborag[mcp]`
+
+**Claude Desktop config:**
+
+```json
+{
+  "mcpServers": {
+    "turborag": {
+      "command": "turborag",
+      "args": ["mcp", "--index", "/path/to/index"]
+    }
+  }
+}
+```
+
+### turborag benchmark
+
+Run retrieval benchmarks.
+
+```bash
+turborag benchmark --index ./my_index --queries FILE [OPTIONS]
+
+Options:
+  --index DIRECTORY        # Required
+  --queries FILE           # Required - JSONL test queries
+  --dataset FILE           # Corpus for baseline comparison
+  --baseline [exact|faiss-flat|faiss-hnsw|faiss-ivfpq]  # Repeatable
+  --output FILE            # Write JSON results
+  --k INTEGER              # Default: 10
+  --json-output            # Emit full JSON report
+```
+
+**Query Format:**
+
+```json
+{"query_id": "q1", "query_vector": [0.1, ...], "relevant_ids": ["c1", "c5"]}
+```
+
+### turborag describe-index
+
+Show index configuration.
+
+```bash
+turborag describe-index --index ./my_index
+```
+
+### Environment Variables
+
+| Variable | Command | Description |
+|----------|---------|-------------|
+| `SUPABASE_URL` | `turborag adapt supabase` | Supabase project URL |
+| `SUPABASE_KEY` | `turborag adapt supabase` | Supabase API key |
+| `PINECONE_API_KEY` | `turborag adapt pinecone` | Pinecone API key |
+| `QDRANT_URL` | `turborag adapt qdrant` | Qdrant server URL |
+| `QDRANT_API_KEY` | `turborag adapt qdrant` | Qdrant API key (optional) |
+| `DATABASE_URL` | `turborag adapt neon` | Postgres connection string |
 
 ---
 

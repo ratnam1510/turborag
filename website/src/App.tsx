@@ -2083,6 +2083,759 @@ Each client is ~100 lines wrapping \`POST\`/\`GET\` with JSON serialization. To 
 2. Implement the 7 API methods above
 3. Use native HTTP — no external dependencies
 4. Match the type signatures from the TypeScript client`
+  },
+  'cli-reference': {
+    title: 'CLI Reference',
+    content: `# CLI Reference
+
+Complete reference for all TurboRAG command-line tools. Install with \`pip install turborag\`.
+
+## Global Options
+
+\`\`\`bash
+turborag [OPTIONS] COMMAND [ARGS]...
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--log-level\` | \`INFO\` | Logging verbosity: \`debug\`, \`info\`, \`warning\`, \`error\`, \`critical\` |
+| \`--log-format\` | \`text\` | Output format: \`text\` or \`json\` |
+| \`--help\` | — | Show help and exit |
+
+## Commands
+
+### turborag serve
+
+Start the HTTP API server for TurboRAG retrieval.
+
+\`\`\`bash
+turborag serve --index ./turborag_sidecar [OPTIONS]
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--index\` | *required* | Path to TurboRAG index directory |
+| \`--host\` | \`127.0.0.1\` | Bind address |
+| \`--port\` | \`8080\` | Port number |
+| \`--workers\` | \`1\` | Number of uvicorn workers |
+| \`--model\` | — | Sentence-transformers model for text queries |
+| \`--cors-origins\` | \`*\` | Comma-separated allowed CORS origins |
+| \`--adapter-config\` | — | Path to adapter config JSON from \`turborag adapt\` |
+| \`--no-load-snapshot\` | — | Don't load records.jsonl into memory (use with external DBs) |
+| \`--require-hydrated\` | — | Drop hits that can't be hydrated |
+
+**Examples:**
+
+\`\`\`bash
+# Basic server
+turborag serve --index ./my_index
+
+# Production with multiple workers
+turborag serve --index ./my_index --host 0.0.0.0 --port 8080 --workers 4
+
+# With text query support
+turborag serve --index ./my_index --model sentence-transformers/all-MiniLM-L6-v2
+
+# Low-memory mode with external database
+turborag serve --index ./my_index --no-load-snapshot --adapter-config ./adapter.json
+\`\`\`
+
+---
+
+### turborag query
+
+Query a TurboRAG index from the command line.
+
+\`\`\`bash
+turborag query --index ./turborag_sidecar [OPTIONS]
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--index\` | *required* | Path to TurboRAG index directory |
+| \`--query\` | — | Query text to embed locally |
+| \`--model\` | — | Sentence-transformers model for \`--query\` |
+| \`--query-vector\` | — | Inline JSON array query vector |
+| \`--query-vector-file\` | — | Path to JSON file with query vector |
+| \`--top-k\` | \`5\` | Number of results |
+| \`--ids-only\` | — | Return only chunk_id and score (minimal memory) |
+
+**Examples:**
+
+\`\`\`bash
+# Query by vector
+turborag query --index ./my_index --query-vector '[0.1, 0.2, 0.3, ...]' --top-k 10
+
+# Query by text (requires model)
+turborag query --index ./my_index --query "What is TurboRAG?" --model all-MiniLM-L6-v2
+
+# ID-only results (lowest memory)
+turborag query --index ./my_index --query-vector-file ./query.json --ids-only
+\`\`\`
+
+---
+
+### turborag import-existing-index
+
+Build a TurboRAG sidecar index from existing embeddings.
+
+\`\`\`bash
+turborag import-existing-index --input ./data.jsonl --index ./turborag_sidecar [OPTIONS]
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--input\` | *required* | Embeddings file (JSONL or NPZ) |
+| \`--index\` | *required* | Output index directory |
+| \`--format\` | \`auto\` | Input format: \`auto\`, \`jsonl\`, or \`npz\` |
+| \`--bits\` | \`3\` | Quantization bits (1-8) |
+| \`--shard-size\` | \`100000\` | Vectors per shard |
+| \`--seed\` | \`42\` | Random seed for reproducibility |
+| \`--no-normalize\` | — | Disable vector normalization |
+| \`--no-record-snapshot\` | — | Skip writing records.jsonl |
+
+**Input Format (JSONL):**
+
+\`\`\`json
+{"chunk_id": "c1", "embedding": [0.1, 0.2, ...], "text": "...", "source_doc": "file.pdf"}
+{"chunk_id": "c2", "embedding": [0.3, 0.4, ...], "text": "...", "source_doc": "file.pdf"}
+\`\`\`
+
+**Examples:**
+
+\`\`\`bash
+# Basic import
+turborag import-existing-index --input ./embeddings.jsonl --index ./my_index
+
+# With higher precision
+turborag import-existing-index --input ./embeddings.jsonl --index ./my_index --bits 4
+
+# From NumPy archive
+turborag import-existing-index --input ./embeddings.npz --index ./my_index --format npz
+\`\`\`
+
+---
+
+### turborag adapt
+
+Configure plug-and-play adapters for existing databases.
+
+\`\`\`bash
+turborag adapt [OPTIONS] COMMAND
+\`\`\`
+
+| Option | Description |
+|---|---|
+| \`--index\` | Index path for auto mode |
+| \`--config\` | Config target path for auto mode |
+| \`--backend\` | Force backend: \`postgres\`, \`neon\`, \`supabase\`, \`pinecone\`, \`qdrant\`, \`chroma\` |
+| \`--option\` | Key=value overrides (can be repeated) |
+
+**Subcommands:**
+
+| Command | Description |
+|---|---|
+| \`supabase\` | Configure Supabase adapter |
+| \`pinecone\` | Configure Pinecone adapter |
+| \`qdrant\` | Configure Qdrant adapter |
+| \`chroma\` | Configure Chroma adapter |
+| \`neon\` | Configure Neon/Postgres adapter |
+| \`set\` | Create/update adapter config |
+| \`show\` | Show current adapter config |
+| \`remove\` | Remove adapter config |
+| \`demo\` | Print example command for a backend |
+
+**Examples:**
+
+\`\`\`bash
+# Auto-detect and configure from environment
+turborag adapt --index ./my_index
+
+# Configure Supabase explicitly
+turborag adapt supabase --index ./my_index \\
+  --url "$SUPABASE_URL" \\
+  --key "$SUPABASE_KEY" \\
+  --table chunks
+
+# Configure Pinecone
+turborag adapt pinecone --index ./my_index \\
+  --api-key "$PINECONE_API_KEY" \\
+  --index-name my-pinecone-index
+
+# Configure Qdrant
+turborag adapt qdrant --index ./my_index \\
+  --url "http://localhost:6333" \\
+  --collection-name chunks
+
+# Configure Chroma
+turborag adapt chroma --index ./my_index \\
+  --path ./chroma_db \\
+  --collection-name chunks
+
+# Show current config
+turborag adapt show --index ./my_index
+
+# Remove adapter config
+turborag adapt remove --index ./my_index
+\`\`\`
+
+---
+
+### turborag mcp
+
+Start an MCP (Model Context Protocol) server over stdio.
+
+\`\`\`bash
+turborag mcp --index ./turborag_sidecar
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--index\` | *required* | Path to TurboRAG index directory |
+
+Requires: \`pip install turborag[mcp]\`
+
+**Usage with Claude Desktop:**
+
+Add to your Claude Desktop config:
+
+\`\`\`json
+{
+  "mcpServers": {
+    "turborag": {
+      "command": "turborag",
+      "args": ["mcp", "--index", "/path/to/index"]
+    }
+  }
+}
+\`\`\`
+
+---
+
+### turborag benchmark
+
+Run retrieval benchmarks against a TurboRAG index.
+
+\`\`\`bash
+turborag benchmark --index ./turborag_sidecar --queries ./queries.jsonl [OPTIONS]
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--index\` | *required* | Path to TurboRAG index directory |
+| \`--queries\` | *required* | JSONL file with test queries |
+| \`--dataset\` | — | Corpus embeddings for baseline comparison |
+| \`--baseline\` | — | Baseline backend: \`exact\`, \`faiss-flat\`, \`faiss-hnsw\`, \`faiss-ivfpq\` |
+| \`--output\` | — | Path to write JSON benchmark results |
+| \`--k\` | \`10\` | Number of results for recall/MRR |
+| \`--json-output\` | — | Emit full JSON report |
+
+**Query File Format (JSONL):**
+
+\`\`\`json
+{"query_id": "q1", "query_vector": [0.1, 0.2, ...], "relevant_ids": ["c1", "c5"]}
+{"query_id": "q2", "query_vector": [0.3, 0.4, ...], "relevant_ids": ["c2", "c8"]}
+\`\`\`
+
+**Examples:**
+
+\`\`\`bash
+# Basic benchmark
+turborag benchmark --index ./my_index --queries ./test_queries.jsonl
+
+# With baseline comparison
+turborag benchmark --index ./my_index --queries ./test_queries.jsonl \\
+  --dataset ./corpus.jsonl \\
+  --baseline exact \\
+  --baseline faiss-hnsw
+
+# Export results
+turborag benchmark --index ./my_index --queries ./test_queries.jsonl \\
+  --output ./benchmark_results.json --json-output
+\`\`\`
+
+---
+
+### turborag describe-index
+
+Show configuration of an existing TurboRAG index.
+
+\`\`\`bash
+turborag describe-index --index ./turborag_sidecar
+\`\`\`
+
+| Option | Default | Description |
+|---|---|---|
+| \`--index\` | *required* | Path to TurboRAG index directory |
+
+**Output includes:**
+
+- Vector dimensions
+- Quantization bits
+- Number of vectors
+- Shard configuration
+- Search mode (auto/exact/fast)
+- Index size on disk
+
+---
+
+## Quick Reference
+
+\`\`\`bash
+# Create index from existing embeddings
+turborag import-existing-index --input data.jsonl --index ./my_index
+
+# Configure database adapter
+turborag adapt supabase --index ./my_index
+
+# Start HTTP server
+turborag serve --index ./my_index --port 8080
+
+# Start MCP server (for Claude Desktop)
+turborag mcp --index ./my_index
+
+# Query from command line
+turborag query --index ./my_index --query "search text" --model all-MiniLM-L6-v2
+
+# Run benchmarks
+turborag benchmark --index ./my_index --queries queries.jsonl
+
+# Inspect index
+turborag describe-index --index ./my_index
+\`\`\`
+
+## Environment Variables
+
+| Variable | Used By | Description |
+|---|---|---|
+| \`SUPABASE_URL\` | \`turborag adapt supabase\` | Supabase project URL |
+| \`SUPABASE_KEY\` | \`turborag adapt supabase\` | Supabase API key |
+| \`PINECONE_API_KEY\` | \`turborag adapt pinecone\` | Pinecone API key |
+| \`QDRANT_URL\` | \`turborag adapt qdrant\` | Qdrant server URL |
+| \`QDRANT_API_KEY\` | \`turborag adapt qdrant\` | Qdrant API key (optional) |
+| \`DATABASE_URL\` | \`turborag adapt neon\` | Postgres/Neon connection string |`
+  },
+  'database-adapters': {
+    title: 'Database Adapters',
+    content: `# Database Adapters
+
+TurboRAG integrates with your existing vector database as a sidecar — no migration required. Your database stays the source of truth for records; TurboRAG handles fast compressed retrieval.
+
+## Supported Databases
+
+| Database | Builder Function | Install |
+|---|---|---|
+| **PostgreSQL** | \`build_postgres_fetch_records()\` | \`pip install turborag[adapters]\` |
+| **Neon** | \`build_neon_fetch_records()\` | \`pip install turborag[adapters]\` |
+| **Supabase** | \`build_supabase_fetch_records()\` | \`pip install turborag[adapters]\` |
+| **Pinecone** | \`build_pinecone_fetch_records()\` | \`pip install turborag[adapters]\` |
+| **Qdrant** | \`build_qdrant_fetch_records()\` | \`pip install turborag[adapters]\` |
+| **Chroma** | \`build_chroma_fetch_records()\` | \`pip install turborag[adapters]\` |
+
+## Quick Setup (CLI)
+
+The fastest way to configure a database adapter:
+
+\`\`\`bash
+# Auto-detect from environment variables
+turborag adapt --index ./my_index
+
+# Or explicitly specify backend
+turborag adapt supabase --index ./my_index
+turborag adapt pinecone --index ./my_index
+turborag adapt qdrant --index ./my_index
+turborag adapt chroma --index ./my_index
+turborag adapt neon --index ./my_index
+\`\`\`
+
+---
+
+## Supabase
+
+### CLI Setup
+
+\`\`\`bash
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_KEY="your-anon-or-service-key"
+
+turborag adapt supabase --index ./my_index \\
+  --table chunks \\
+  --id-column chunk_id \\
+  --text-column text
+\`\`\`
+
+### Python API
+
+\`\`\`python
+from supabase import create_client
+from turborag.adapters.backends import build_supabase_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Create Supabase client
+supabase = create_client(
+    "https://your-project.supabase.co",
+    "your-anon-or-service-key"
+)
+
+# Build the fetch function
+fetch_records = build_supabase_fetch_records(
+    client=supabase,
+    table="chunks",
+    id_column="chunk_id",        # Your ID column
+    text_column="text",          # Your text content column
+    source_doc_column="source_doc",
+    page_num_column="page_num",
+    section_column="section",
+    metadata_column="metadata",  # Optional JSON metadata
+)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=your_embeddings_matrix,  # numpy array
+    ids=your_chunk_ids,                 # list of strings
+    query_embedder=your_embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+
+# Query
+results = adapter.query("What is the revenue?", k=10)
+for hit in results.hits:
+    print(f"{hit.chunk_id}: {hit.text[:100]}...")
+\`\`\`
+
+### Table Schema
+
+\`\`\`sql
+CREATE TABLE chunks (
+    chunk_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    embedding VECTOR(384),  -- pgvector
+    source_doc TEXT,
+    page_num INTEGER,
+    section TEXT,
+    metadata JSONB
+);
+\`\`\`
+
+---
+
+## Pinecone
+
+### CLI Setup
+
+\`\`\`bash
+export PINECONE_API_KEY="your-api-key"
+
+turborag adapt pinecone --index ./my_index \\
+  --index-name your-pinecone-index \\
+  --namespace prod
+\`\`\`
+
+### Python API
+
+\`\`\`python
+from pinecone import Pinecone
+from turborag.adapters.backends import build_pinecone_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Create Pinecone client
+pc = Pinecone(api_key="your-api-key")
+index = pc.Index("your-index-name")
+
+# Build the fetch function
+fetch_records = build_pinecone_fetch_records(
+    index=index,
+    namespace="prod",           # Optional namespace
+    text_key="text",            # Metadata key for text content
+    source_doc_key="source_doc",
+    page_num_key="page_num",
+    section_key="section",
+)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=your_embeddings_matrix,
+    ids=your_chunk_ids,
+    query_embedder=your_embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+
+# Query
+results = adapter.query("What changed in Q3?", k=10)
+\`\`\`
+
+### Pinecone Metadata
+
+Pinecone stores text and metadata in the vector record's metadata field:
+
+\`\`\`python
+# When upserting to Pinecone
+index.upsert([
+    {
+        "id": "chunk-1",
+        "values": [0.1, 0.2, 0.3, ...],
+        "metadata": {
+            "text": "The quarterly revenue increased...",
+            "source_doc": "earnings.pdf",
+            "page_num": 5,
+            "section": "Financial Overview"
+        }
+    }
+])
+\`\`\`
+
+---
+
+## Qdrant
+
+### CLI Setup
+
+\`\`\`bash
+export QDRANT_URL="http://localhost:6333"
+export QDRANT_API_KEY="your-api-key"  # Optional
+
+turborag adapt qdrant --index ./my_index \\
+  --collection-name chunks
+\`\`\`
+
+### Python API
+
+\`\`\`python
+from qdrant_client import QdrantClient
+from turborag.adapters.backends import build_qdrant_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Create Qdrant client
+client = QdrantClient(
+    url="http://localhost:6333",
+    api_key="your-api-key",  # Optional
+)
+
+# Build the fetch function
+fetch_records = build_qdrant_fetch_records(
+    client=client,
+    collection_name="chunks",
+    text_key="text",            # Payload key for text
+    source_doc_key="source_doc",
+    page_num_key="page_num",
+    section_key="section",
+)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=your_embeddings_matrix,
+    ids=your_chunk_ids,
+    query_embedder=your_embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+\`\`\`
+
+### Qdrant Payload
+
+\`\`\`python
+# When upserting to Qdrant
+client.upsert(
+    collection_name="chunks",
+    points=[
+        {
+            "id": "chunk-1",
+            "vector": [0.1, 0.2, 0.3, ...],
+            "payload": {
+                "text": "The quarterly revenue increased...",
+                "source_doc": "earnings.pdf",
+                "page_num": 5,
+                "section": "Financial Overview"
+            }
+        }
+    ]
+)
+\`\`\`
+
+---
+
+## ChromaDB
+
+### CLI Setup
+
+\`\`\`bash
+turborag adapt chroma --index ./my_index \\
+  --path ./chroma_db \\
+  --collection-name chunks
+\`\`\`
+
+### Python API
+
+\`\`\`python
+import chromadb
+from turborag.adapters.backends import build_chroma_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Create Chroma client
+chroma = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma.get_collection("chunks")
+
+# Build the fetch function
+fetch_records = build_chroma_fetch_records(collection=collection)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=your_embeddings_matrix,
+    ids=your_chunk_ids,
+    query_embedder=your_embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+\`\`\`
+
+### Chroma Collection
+
+\`\`\`python
+# When adding to Chroma
+collection.add(
+    ids=["chunk-1", "chunk-2"],
+    embeddings=[[0.1, 0.2, ...], [0.3, 0.4, ...]],
+    documents=["The quarterly revenue...", "Operating expenses..."],
+    metadatas=[
+        {"source_doc": "earnings.pdf", "page_num": 5},
+        {"source_doc": "earnings.pdf", "page_num": 6},
+    ]
+)
+\`\`\`
+
+---
+
+## PostgreSQL / Neon
+
+### CLI Setup
+
+\`\`\`bash
+export DATABASE_URL="postgresql://user:pass@host/db"
+
+turborag adapt neon --index ./my_index \\
+  --table chunks \\
+  --id-column chunk_id \\
+  --text-column text
+\`\`\`
+
+### Python API
+
+\`\`\`python
+from turborag.adapters.backends import build_postgres_fetch_records
+from turborag.adapters.compat import ExistingRAGAdapter
+
+# Option 1: Using DSN
+fetch_records = build_postgres_fetch_records(
+    dsn="postgresql://user:pass@host/db",
+    table="public.chunks",
+    id_column="chunk_id",
+    text_column="text",
+    source_doc_column="source_doc",
+    page_num_column="page_num",
+    section_column="section",
+    metadata_column="metadata",
+)
+
+# Option 2: Using existing connection
+import psycopg
+conn = psycopg.connect("postgresql://user:pass@host/db")
+fetch_records = build_postgres_fetch_records(
+    connection=conn,
+    table="chunks",
+)
+
+# Create adapter
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=your_embeddings_matrix,
+    ids=your_chunk_ids,
+    query_embedder=your_embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+\`\`\`
+
+### Table Schema
+
+\`\`\`sql
+CREATE TABLE chunks (
+    chunk_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    embedding VECTOR(384),  -- pgvector (optional, TurboRAG doesn't need it)
+    source_doc TEXT,
+    page_num INTEGER,
+    section TEXT,
+    metadata JSONB
+);
+
+-- Index on chunk_id for fast lookups
+CREATE INDEX idx_chunks_id ON chunks(chunk_id);
+\`\`\`
+
+---
+
+## Adapter Configuration File
+
+The \`turborag adapt\` CLI generates an \`adapter.json\` file in your index directory:
+
+\`\`\`json
+{
+  "version": 1,
+  "backend": "supabase",
+  "url": "\${SUPABASE_URL}",
+  "key": "\${SUPABASE_KEY}",
+  "table": "chunks",
+  "id_column": "chunk_id",
+  "text_column": "text"
+}
+\`\`\`
+
+Environment variables are referenced with \`\${VAR_NAME}\` syntax — secrets stay in your environment, not in config files.
+
+## Using With HTTP Server
+
+\`\`\`bash
+# Configure adapter
+turborag adapt supabase --index ./my_index
+
+# Start server (auto-loads adapter.json)
+turborag serve --index ./my_index --port 8080 --no-load-snapshot
+\`\`\`
+
+The \`--no-load-snapshot\` flag tells the server to fetch records from your database instead of loading them into memory.
+
+## Custom Record Resolver
+
+For databases not listed above, implement a custom \`fetch_records\` function:
+
+\`\`\`python
+from turborag.adapters.compat import ExistingRAGAdapter
+
+def fetch_records(ids: list[str]) -> list[dict]:
+    """Fetch records from your custom database."""
+    records = []
+    for chunk_id in ids:
+        # Your database query here
+        row = your_db.get(chunk_id)
+        records.append({
+            "chunk_id": chunk_id,
+            "text": row["content"],
+            "source_doc": row.get("file"),
+            "page_num": row.get("page"),
+            "section": row.get("heading"),
+            "metadata": row.get("meta", {}),
+        })
+    return records
+
+adapter = ExistingRAGAdapter.from_embeddings(
+    embeddings=embeddings,
+    ids=ids,
+    query_embedder=embedder,
+    fetch_records=fetch_records,
+    bits=3,
+)
+\`\`\``
   }
 }
 
@@ -2119,11 +2872,13 @@ function DocsCodeBlock({ children, className }: { children: string; className?: 
 const docsSidebar = [
   { section: 'Getting Started', items: [
     { title: 'Installation', slug: 'installation' },
+    { title: 'CLI Reference', slug: 'cli-reference' },
     { title: 'Client SDKs', slug: 'client-sdks' },
     { title: 'Architecture', slug: 'architecture' },
   ]},
   { section: 'Guides', items: [
     { title: 'Adoption Guide', slug: 'adoption' },
+    { title: 'Database Adapters', slug: 'database-adapters' },
     { title: 'RAG Rollout', slug: 'current-rag-rollout' },
     { title: 'Import Existing Data', slug: 'import-existing' },
   ]},
