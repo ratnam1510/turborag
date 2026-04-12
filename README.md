@@ -16,21 +16,26 @@ TurboRAG is a production-grade compressed vector retrieval engine with graph-aug
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
+Latest local reproducible runs on `arm64` as of 2026-04-12. Exact mode now uses the native threaded 3-bit top-k path with a 12-bit half-group fused scorer by default.
+
 | Backend | Recall@10 | MRR | QPS | Memory | Notes |
 |---|---|---|---|---|---|
-| **TurboRAG exact** | **1.000** | **1.000** | **67** | **18.3 MB** | Guaranteed perfect recall |
-| **TurboRAG fast** | **0.975** | **0.975** | **274** | **18.3 MB** | Binary sketch head + LUT refine |
-| Exact float32 | 1.000 | 1.000 | 240 | 146.5 MB | Brute force |
-| FAISS Flat | 1.000 | 1.000 | 232 | 146.5 MB | Brute force |
-| FAISS HNSW | 0.645 | 0.645 | 1,928 | 152.6 MB | Vectors + graph |
+| **TurboRAG exact** | **1.000** | **1.000** | **66** | **18.3 MB** | Full side-by-side FAISS matrix run |
+| **TurboRAG fast** | **0.975** | **0.975** | **131** | **18.3 MB** | Binary sketch head + LUT refine |
+| Exact float32 | 1.000 | 1.000 | 73 | 146.5 MB | Brute force |
+| FAISS Flat | 1.000 | 1.000 | 60 | 146.5 MB | Brute force |
+| FAISS HNSW | 0.610 | 0.610 | 771 | 152.6 MB | High throughput, recall drop |
+
+Exact-only benchmark note: repeated TurboRAG exact-only runs on the same fixture now median at **70.98 QPS** in the main benchmark environment.
 
 TurboRAG `auto` mode selects the best strategy per query: `exact` for small indexes, `fast` for large ones.
+Exact mode uses the native C scorer and defaults to up to `8` threads. Override with `TURBORAG_EXACT_THREADS=<n>` when benchmarking.
 
 **Key advantages:**
 - **8× memory compression** — 18.3 MB vs 146.5 MB float32 at 100K scale, with perfect recall in exact mode
-- **Adaptive two-stage search** — binary sketch pre-filter (SimHash + POPCNT) with full LUT refine gives 4× speedup over exact with 97.5% recall
+- **Adaptive two-stage search** — binary sketch pre-filter (SimHash + POPCNT) with full LUT refine gives about 2× throughput over current exact on the 100K fixture while holding 97.5% recall
 - **Guaranteed exact mode** — `mode="exact"` always gives perfect recall when accuracy is non-negotiable
-- **64% higher recall than HNSW** — TurboRAG fast (0.975) vs FAISS HNSW (0.645), while using 8× less memory
+- **Memory-first exact retrieval** — exact mode keeps perfect recall at 18.3 MB instead of a 146.5 MB float32 matrix
 - Production-hardened with atomic persistence, concurrency-safe HTTP service, and input validation
 
 ## What Ships Today
@@ -147,13 +152,13 @@ docker run -p 8080:8080 -v ./my_index:/data/index turborag \
 turborag benchmark \
   --index ./turborag_sidecar \
   --queries ./queries.jsonl \
+  --turborag-mode exact \
   --dataset ./corpus.jsonl \
   --baseline exact \
-  --baseline faiss-flat \
-  --baseline faiss-hnsw \
-  --baseline faiss-ivfpq \
   --k 10
 ```
+
+For the current exact-mode path, use `TURBORAG_EXACT_THREADS=8` or leave it unset to use the default native thread count.
 
 See [docs/benchmarking.md](docs/benchmarking.md).
 

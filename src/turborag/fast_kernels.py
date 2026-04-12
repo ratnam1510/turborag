@@ -52,6 +52,25 @@ def build_query_lut(
     return q[:, np.newaxis] * dequant_values[np.newaxis, :]  # (dim, num_levels)
 
 
+def build_query_lut_f32(
+    query_rotated: FloatArray,
+    bits: int,
+    value_range: float = 1.0,
+) -> FloatArray:
+    """Float32 LUT builder for native exact top-k paths."""
+    if bits not in SUPPORTED_BITS:
+        raise ValueError(f"bits must be one of {sorted(SUPPORTED_BITS)}")
+
+    q = np.asarray(query_rotated, dtype=np.float32).ravel()
+    num_levels = 1 << bits
+    max_level = num_levels - 1
+
+    levels = np.arange(num_levels, dtype=np.float32)
+    dequant_values = (levels / max_level) * (2.0 * value_range) - value_range
+
+    return q[:, np.newaxis] * dequant_values[np.newaxis, :]
+
+
 # ---------------------------------------------------------------------------
 # Scoring — single query
 # ---------------------------------------------------------------------------
@@ -99,6 +118,82 @@ def score_shard_lut(
         _accumulate_general(packed, lut, dim, bits, scores)
 
     return scores.astype(np.float32)
+
+
+def topk_shard_lut(
+    packed_db: Uint8Array,
+    lut: Float64Array,
+    dim: int,
+    bits: int,
+    k: int,
+) -> tuple[NDArray[np.int32], FloatArray]:
+    """Return top-k indices and scores for a shard using a precomputed LUT."""
+    if bits not in SUPPORTED_BITS:
+        raise ValueError(f"bits must be one of {sorted(SUPPORTED_BITS)}")
+    if k <= 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    packed = np.asarray(packed_db, dtype=np.uint8)
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+    if packed.shape[0] == 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    if bits == 3:
+        native_topk = _topk_shard_lut_3bit_native(packed, lut, dim, k)
+        if native_topk is not None:
+            return native_topk
+
+    scores = score_shard_lut(packed, lut, dim, bits)
+    local_k = min(k, len(scores))
+    if local_k == len(scores):
+        top_indices = np.argsort(scores)[::-1]
+    else:
+        top_indices = np.argpartition(scores, -local_k)[-local_k:]
+        top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
+    return top_indices.astype(np.int32, copy=False), scores[top_indices]
+
+
+def _topk_shard_lut_3bit_native(
+    packed: Uint8Array,
+    lut: Float64Array,
+    dim: int,
+    k: int,
+) -> tuple[NDArray[np.int32], FloatArray] | None:
+    """Try the native 3-bit top-k kernels from fastest/specialized to oldest fallback."""
+    try:
+        from ._cscore_wrapper import (
+            build_fused_lut_c,
+            build_fused_lut_12bit_f32_c,
+            build_fused_lut_f32_c,
+            score_fused_3bit_topk_c,
+            score_fused_3bit_topk_12bit_f32_c,
+            score_fused_3bit_topk_f32_c,
+        )
+    except ImportError:
+        return None
+
+    lut32 = lut if lut.dtype == np.float32 else lut.astype(np.float32, copy=False)
+
+    fused12_f32 = build_fused_lut_12bit_f32_c(lut32, dim)
+    if fused12_f32 is not None:
+        topk_12bit = score_fused_3bit_topk_12bit_f32_c(packed, fused12_f32, dim, k)
+        if topk_12bit is not None:
+            return topk_12bit
+
+    fused3_f32 = build_fused_lut_f32_c(lut32, dim, 3)
+    if fused3_f32 is not None:
+        topk_f32 = score_fused_3bit_topk_f32_c(packed, fused3_f32, lut32, dim, k)
+        if topk_f32 is not None:
+            return topk_f32
+
+    fused3 = build_fused_lut_c(lut, dim, 3)
+    if fused3 is not None:
+        topk = score_fused_3bit_topk_c(packed, fused3, lut, dim, k)
+        if topk is not None:
+            return topk
+
+    return None
 
 
 # ---------------------------------------------------------------------------

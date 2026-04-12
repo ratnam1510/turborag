@@ -65,11 +65,11 @@ The original local reference PDF (`TurboRAG Specification - Understanding Google
 
 | | Recall@10 | QPS |
 |---|---|---|
-| **TurboRAG 3-bit** | 1.000 | 65 |
-| Exact float32 | 1.000 | 240 |
-| FAISS HNSW | 0.645 | 1,928 |
+| **TurboRAG exact 3-bit** | 1.000 | 66 |
+| **TurboRAG fast 3-bit** | 0.975 | 131 |
+| Exact float32 | 1.000 | 73 |
 
-TurboRAG achieves perfect recall at both scales. At large scale, FAISS HNSW drops to 0.645 recall while TurboRAG maintains 1.000.
+TurboRAG achieves perfect recall at both scales in exact mode. The large-scale exact path now uses native threaded 12-bit half-group fused top-k scanning by default on the C scorer. Repeated exact-only runs on the benchmark fixture median at 70.98 QPS.
 
 ## Important Precision Note
 

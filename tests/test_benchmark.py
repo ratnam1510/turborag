@@ -223,7 +223,50 @@ class TestBenchmarkCLI:
         assert bench_json.exit_code == 0, bench_json.output
         payload = json.loads(bench_json.output)
         assert payload["k"] == 3
-        assert payload["label"] == "turborag"
+        assert payload["label"] == "turborag-auto"
+
+    def test_benchmark_command_accepts_exact_mode(self, tmp_path):
+        from click.testing import CliRunner
+        from turborag.cli import cli
+
+        dataset_path = tmp_path / "data.jsonl"
+        rows = [
+            {"chunk_id": f"doc-{i}", "text": f"text {i}", "embedding": [float(i == j) for j in range(4)]}
+            for i in range(4)
+        ]
+        dataset_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+        runner = CliRunner()
+        import_result = runner.invoke(
+            cli,
+            ["import-existing-index", "--input", str(dataset_path), "--index", str(tmp_path / "index"), "--bits", "4"],
+        )
+        assert import_result.exit_code == 0, import_result.output
+
+        queries_path = tmp_path / "queries.jsonl"
+        queries = [
+            {"query_id": "q0", "query_vector": [1.0, 0.0, 0.0, 0.0], "relevant_ids": ["doc-0"]},
+        ]
+        queries_path.write_text("\n".join(json.dumps(q) for q in queries) + "\n", encoding="utf-8")
+
+        bench_json = runner.invoke(
+            cli,
+            [
+                "benchmark",
+                "--index",
+                str(tmp_path / "index"),
+                "--queries",
+                str(queries_path),
+                "--k",
+                "1",
+                "--turborag-mode",
+                "exact",
+                "--json-output",
+            ],
+        )
+        assert bench_json.exit_code == 0, bench_json.output
+        payload = json.loads(bench_json.output)
+        assert payload["label"] == "turborag-exact"
 
     def test_side_by_side_cli_writes_artifact(self, tmp_path):
         from click.testing import CliRunner

@@ -20,7 +20,7 @@ from .compress import (
     quantize_qjl,
 )
 from .exceptions import DuplicateIDError, IDNotFoundError
-from .fast_kernels import build_query_lut, score_shard_lut
+from .fast_kernels import build_query_lut, build_query_lut_f32, score_shard_lut, topk_shard_lut
 
 logger = logging.getLogger(__name__)
 
@@ -154,35 +154,20 @@ class TurboIndex:
     def _search_exact(self, query: np.ndarray, k: int) -> list[tuple[str, float]]:
         """Exhaustive LUT scan — guaranteed perfect recall."""
         query_rotated = self._prepare_query(query)
-        lut = build_query_lut(query_rotated, bits=self.bits, value_range=self.value_range)
+        lut = self._build_exact_query_lut(query_rotated)
 
         # Single shard fast path
         if len(self._shards) == 1:
             shard = self._shards[0]
-            scores = score_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits)
-            local_k = min(k, len(scores))
-            if local_k == 0:
-                return []
-            if local_k == len(scores):
-                top_indices = np.argsort(scores)[::-1]
-            else:
-                top_indices = np.argpartition(scores, -local_k)[-local_k:]
-                top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
-            return [(shard.ids[int(i)], float(scores[int(i)])) for i in top_indices]
+            top_indices, top_scores = topk_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits, k=k)
+            return [(shard.ids[int(i)], float(score)) for i, score in zip(top_indices, top_scores, strict=False)]
 
         # Multi-shard path
         candidates: list[tuple[str, float]] = []
         for shard in self._shards:
-            scores = score_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits)
-            local_k = min(k, len(scores))
-            if local_k == 0:
-                continue
-            if local_k == len(scores):
-                shard_indices = np.arange(len(scores))
-            else:
-                shard_indices = np.argpartition(scores, -local_k)[-local_k:]
-            for index in shard_indices:
-                candidates.append((shard.ids[int(index)], float(scores[int(index)])))
+            shard_indices, shard_scores = topk_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits, k=k)
+            for index, score in zip(shard_indices, shard_scores, strict=False):
+                candidates.append((shard.ids[int(index)], float(score)))
 
         candidates.sort(key=lambda item: item[1], reverse=True)
         return candidates[:k]
@@ -323,23 +308,20 @@ class TurboIndex:
 
         # Prepare all queries
         prepared = [self._prepare_query(matrix[i]) for i in range(matrix.shape[0])]
-        query_luts = [build_query_lut(q, bits=self.bits, value_range=self.value_range) for q in prepared]
+        query_luts = [self._build_exact_query_lut(q) for q in prepared]
 
         all_candidates: list[list[tuple[str, float]]] = [[] for _ in range(len(query_luts))]
 
         def _scan_shard(shard: _Shard) -> list[list[tuple[str, float]]]:
             per_query: list[list[tuple[str, float]]] = []
             for qk in query_luts:
-                scores = score_shard_lut(shard.vectors, qk, dim=self.dim, bits=self.bits)
-                local_k = min(k, len(scores))
-                if local_k == 0:
+                idxs, top_scores = topk_shard_lut(shard.vectors, qk, dim=self.dim, bits=self.bits, k=k)
+                if len(idxs) == 0:
                     per_query.append([])
                     continue
-                if local_k == len(scores):
-                    idxs = np.arange(len(scores))
-                else:
-                    idxs = np.argpartition(scores, -local_k)[-local_k:]
-                per_query.append([(shard.ids[int(i)], float(scores[int(i)])) for i in idxs])
+                per_query.append(
+                    [(shard.ids[int(i)], float(score)) for i, score in zip(idxs, top_scores, strict=False)]
+                )
             return per_query
 
         if max_workers is not None and max_workers > 1 and len(self._shards) > 1:
@@ -375,6 +357,12 @@ class TurboIndex:
 
         rotated = (vector.reshape(1, -1) @ self._rotation_t).astype(np.float32)
         return rotated[0]
+
+    def _build_exact_query_lut(self, query_rotated: np.ndarray) -> np.ndarray:
+        """Use float32 LUTs when exact mode can stay on the native 3-bit path."""
+        if self.bits == 3:
+            return build_query_lut_f32(query_rotated, bits=self.bits, value_range=self.value_range)
+        return build_query_lut(query_rotated, bits=self.bits, value_range=self.value_range)
 
     def save(self, path: str) -> None:
         index_dir = Path(path)

@@ -22,6 +22,19 @@ _lib: ctypes.CDLL | None = None
 _load_attempted = False
 
 
+def _resolve_exact_threads(num_threads: int | None) -> int:
+    if num_threads is not None:
+        return max(1, int(num_threads))
+    raw = os.environ.get("TURBORAG_EXACT_THREADS")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 1
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(8, cpu_count))
+
+
 def _find_or_compile() -> ctypes.CDLL | None:
     """Find pre-compiled library or compile from source."""
     src_dir = Path(__file__).parent
@@ -57,9 +70,11 @@ def _find_or_compile() -> ctypes.CDLL | None:
             "-o", str(lib_path),
             str(c_source),
         ]
+        if sys.platform != "win32":
+            cmd.insert(1, "-pthread")
         if sys.platform == "darwin":
-            cmd.insert(1, "-undefined")
-            cmd.insert(2, "dynamic_lookup")
+            cmd.insert(2, "-undefined")
+            cmd.insert(3, "dynamic_lookup")
 
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30,
@@ -125,6 +140,18 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.POINTER(ctypes.c_double),   # fused out
                 ctypes.c_int,                       # dim
             ]
+            _lib.build_fused_3bit_f32.restype = None
+            _lib.build_fused_3bit_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float),    # lut
+                ctypes.POINTER(ctypes.c_float),    # fused out
+                ctypes.c_int,                       # dim
+            ]
+            _lib.build_fused_3bit_12bit_f32.restype = None
+            _lib.build_fused_3bit_12bit_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float),    # lut
+                ctypes.POINTER(ctypes.c_float),    # fused out
+                ctypes.c_int,                       # dim
+            ]
 
             # Fused 3-bit scoring with prebuilt table
             _lib.score_fused_3bit_dispatch.restype = ctypes.c_int
@@ -136,6 +163,46 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.c_int,                       # n_vectors
                 ctypes.c_int,                       # dim
                 ctypes.c_int,                       # bytes_per_vec
+            ]
+
+            # Fused 3-bit scoring with native top-k selection
+            _lib.score_fused_3bit_topk_dispatch.restype = ctypes.c_int
+            _lib.score_fused_3bit_topk_dispatch.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),    # packed_db
+                ctypes.POINTER(ctypes.c_double),   # fused3
+                ctypes.POINTER(ctypes.c_double),   # lut
+                ctypes.POINTER(ctypes.c_int32),    # indices_out
+                ctypes.POINTER(ctypes.c_float),    # scores_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # dim
+                ctypes.c_int,                       # bytes_per_vec
+                ctypes.c_int,                       # k
+                ctypes.c_int,                       # num_threads
+            ]
+            _lib.score_fused_3bit_topk_dispatch_f32.restype = ctypes.c_int
+            _lib.score_fused_3bit_topk_dispatch_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),    # packed_db
+                ctypes.POINTER(ctypes.c_float),    # fused3
+                ctypes.POINTER(ctypes.c_float),    # lut
+                ctypes.POINTER(ctypes.c_int32),    # indices_out
+                ctypes.POINTER(ctypes.c_float),    # scores_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # dim
+                ctypes.c_int,                       # bytes_per_vec
+                ctypes.c_int,                       # k
+                ctypes.c_int,                       # num_threads
+            ]
+            _lib.score_fused_3bit_topk_dispatch_12bit_f32.restype = ctypes.c_int
+            _lib.score_fused_3bit_topk_dispatch_12bit_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),    # packed_db
+                ctypes.POINTER(ctypes.c_float),    # fused12
+                ctypes.POINTER(ctypes.c_int32),    # indices_out
+                ctypes.POINTER(ctypes.c_float),    # scores_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # dim
+                ctypes.c_int,                       # bytes_per_vec
+                ctypes.c_int,                       # k
+                ctypes.c_int,                       # num_threads
             ]
 
             # Hamming scan for binary sketches
@@ -254,6 +321,58 @@ def build_fused_lut_c(
     return fused
 
 
+def build_fused_lut_f32_c(
+    lut: NDArray[np.float32],
+    dim: int,
+    bits: int,
+) -> NDArray[np.float32] | None:
+    """Build a fused byte LUT in float32. Returns None if unavailable."""
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    if bits != 3:
+        return None
+
+    n_groups = (dim + 7) // 8
+    fused_size = n_groups * 3 * 256
+
+    lut_c = np.ascontiguousarray(lut, dtype=np.float32)
+    fused = np.zeros(fused_size, dtype=np.float32)
+
+    lib.build_fused_3bit_f32(
+        lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        fused.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(dim),
+    )
+
+    return fused
+
+
+def build_fused_lut_12bit_f32_c(
+    lut: NDArray[np.float32],
+    dim: int,
+) -> NDArray[np.float32] | None:
+    """Build a 12-bit half-group fused LUT for 3-bit full-group scoring."""
+    lib = _get_lib()
+    if lib is None or (dim & 7) != 0:
+        return None
+
+    n_groups = dim // 8
+    fused_size = n_groups * 2 * 4096
+
+    lut_c = np.ascontiguousarray(lut, dtype=np.float32)
+    fused = np.zeros(fused_size, dtype=np.float32)
+
+    lib.build_fused_3bit_12bit_f32(
+        lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        fused.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(dim),
+    )
+
+    return fused
+
+
 def score_fused_c(
     packed_db: NDArray[np.uint8],
     fused_lut: NDArray[np.float64],
@@ -264,8 +383,14 @@ def score_fused_c(
     if lib is None:
         return None
 
-    packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
-    fused_c = np.ascontiguousarray(fused_lut, dtype=np.float64)
+    if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS']:
+        packed = packed_db
+    else:
+        packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
+    if fused_lut.dtype == np.float64 and fused_lut.flags['C_CONTIGUOUS']:
+        fused_c = fused_lut
+    else:
+        fused_c = np.ascontiguousarray(fused_lut, dtype=np.float64)
 
     if packed.ndim == 1:
         packed = packed.reshape(1, -1)
@@ -309,9 +434,18 @@ def score_fused_3bit_c(
     if lib is None:
         return None
 
-    packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
-    fused_c = np.ascontiguousarray(fused3, dtype=np.float64)
-    lut_c = np.ascontiguousarray(lut, dtype=np.float64)
+    if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS']:
+        packed = packed_db
+    else:
+        packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
+    if fused3.dtype == np.float64 and fused3.flags['C_CONTIGUOUS']:
+        fused_c = fused3
+    else:
+        fused_c = np.ascontiguousarray(fused3, dtype=np.float64)
+    if lut.dtype == np.float64 and lut.flags['C_CONTIGUOUS']:
+        lut_c = lut
+    else:
+        lut_c = np.ascontiguousarray(lut, dtype=np.float64)
 
     if packed.ndim == 1:
         packed = packed.reshape(1, -1)
@@ -335,6 +469,165 @@ def score_fused_3bit_c(
         return None
 
     return scores.astype(np.float32)
+
+
+def score_fused_3bit_topk_c(
+    packed_db: NDArray[np.uint8],
+    fused3: NDArray[np.float64],
+    lut: NDArray[np.float64],
+    dim: int,
+    k: int,
+    num_threads: int | None = None,
+) -> tuple[NDArray[np.int32], NDArray[np.float32]] | None:
+    """Return top-k indices and scores for 3-bit packed DB using a prebuilt fused LUT."""
+    if k <= 0:
+        return (
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.float32),
+        )
+
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS']:
+        packed = packed_db
+    else:
+        packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
+    if fused3.dtype == np.float64 and fused3.flags['C_CONTIGUOUS']:
+        fused_c = fused3
+    else:
+        fused_c = np.ascontiguousarray(fused3, dtype=np.float64)
+    if lut.dtype == np.float64 and lut.flags['C_CONTIGUOUS']:
+        lut_c = lut
+    else:
+        lut_c = np.ascontiguousarray(lut, dtype=np.float64)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+    actual_k = min(k, n_vectors)
+    thread_count = _resolve_exact_threads(num_threads)
+    indices = np.empty(actual_k, dtype=np.int32)
+    scores = np.empty(actual_k, dtype=np.float32)
+
+    found = lib.score_fused_3bit_topk_dispatch(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        fused_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(dim),
+        ctypes.c_int(bytes_per_vec),
+        ctypes.c_int(actual_k),
+        ctypes.c_int(thread_count),
+    )
+
+    if found < 0:
+        return None
+
+    return indices[:found], scores[:found]
+
+
+def score_fused_3bit_topk_f32_c(
+    packed_db: NDArray[np.uint8],
+    fused3: NDArray[np.float32],
+    lut: NDArray[np.float32],
+    dim: int,
+    k: int,
+    num_threads: int | None = None,
+) -> tuple[NDArray[np.int32], NDArray[np.float32]] | None:
+    """Return top-k indices and scores for 3-bit packed DB using float32 fused tables."""
+    if k <= 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS']:
+        packed = packed_db
+    else:
+        packed = np.ascontiguousarray(packed_db, dtype=np.uint8)
+    fused_c = fused3 if fused3.dtype == np.float32 and fused3.flags['C_CONTIGUOUS'] else np.ascontiguousarray(fused3, dtype=np.float32)
+    lut_c = lut if lut.dtype == np.float32 and lut.flags['C_CONTIGUOUS'] else np.ascontiguousarray(lut, dtype=np.float32)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+    actual_k = min(k, n_vectors)
+    thread_count = _resolve_exact_threads(num_threads)
+    indices = np.empty(actual_k, dtype=np.int32)
+    scores = np.empty(actual_k, dtype=np.float32)
+
+    found = lib.score_fused_3bit_topk_dispatch_f32(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        fused_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(dim),
+        ctypes.c_int(bytes_per_vec),
+        ctypes.c_int(actual_k),
+        ctypes.c_int(thread_count),
+    )
+
+    if found < 0:
+        return None
+
+    return indices[:found], scores[:found]
+
+
+def score_fused_3bit_topk_12bit_f32_c(
+    packed_db: NDArray[np.uint8],
+    fused12: NDArray[np.float32],
+    dim: int,
+    k: int,
+    num_threads: int | None = None,
+) -> tuple[NDArray[np.int32], NDArray[np.float32]] | None:
+    """Return top-k for 3-bit full-group packed DB using 12-bit half-group fused tables."""
+    if k <= 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    lib = _get_lib()
+    if lib is None or (dim & 7) != 0:
+        return None
+
+    packed = packed_db if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS'] else np.ascontiguousarray(packed_db, dtype=np.uint8)
+    fused_c = fused12 if fused12.dtype == np.float32 and fused12.flags['C_CONTIGUOUS'] else np.ascontiguousarray(fused12, dtype=np.float32)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+    actual_k = min(k, n_vectors)
+    thread_count = _resolve_exact_threads(num_threads)
+    indices = np.empty(actual_k, dtype=np.int32)
+    scores = np.empty(actual_k, dtype=np.float32)
+
+    found = lib.score_fused_3bit_topk_dispatch_12bit_f32(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        fused_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(dim),
+        ctypes.c_int(bytes_per_vec),
+        ctypes.c_int(actual_k),
+        ctypes.c_int(thread_count),
+    )
+
+    if found < 0:
+        return None
+
+    return indices[:found], scores[:found]
 
 
 def hamming_scan_c(

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Performance
+
+- Added native threaded exact top-k scanning for 3-bit indexes in the C scorer.
+- Exact single-shard search and exact batch search now use native top-k selection instead of materializing full score arrays and ranking in Python.
+- Added a new exact 3-bit full-group half-group fused float32 scorer that collapses each 8-dim group into two 12-bit table lookups in the hot path.
+- Added `TURBORAG_EXACT_THREADS` to override exact-mode thread count; default exact mode now uses the native threaded path automatically.
+- Added `turborag benchmark --turborag-mode {auto,exact,fast}` so benchmark output can report exact-mode results explicitly.
+
 ### New Features
 
 - Added `ExistingRAGAdapter.from_existing_backend(...)` plus `resolve_records_backend(...)` so TurboRAG can attach directly on top of existing database/client integrations without schema migration.

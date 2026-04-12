@@ -58,7 +58,7 @@ from .exceptions import (
     ServiceError,
     TurboRAGError,
 )
-from .fast_kernels import build_query_lut, score_shard_lut
+from .fast_kernels import build_query_lut, score_shard_lut, topk_shard_lut
 from .graph import ENTITY_PROMPT, GraphBuilder
 from .hybrid import HybridRetriever
 from .ingest import (
@@ -84,6 +84,7 @@ __all__ = [
     # Fast kernels
     "build_query_lut",
     "score_shard_lut",
+    "topk_shard_lut",
     # Chunking
     "ChunkConfig",
     "chunk_text",

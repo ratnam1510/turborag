@@ -15,6 +15,7 @@ from turborag.fast_kernels import (
     build_query_lut,
     score_shard_lut,
     score_shard_lut_batch,
+    topk_shard_lut,
 )
 
 
@@ -247,4 +248,120 @@ class TestLUTPerformanceRegression:
         assert results[0][0] == "doc-0"
 
 
+class TestTopKScoring:
+    def test_topk_matches_full_scores_for_3bit(self) -> None:
+        dim = 384
+        bits = 3
+        rng = np.random.default_rng(42)
+        rotation = generate_rotation(dim, seed=7)
 
+        db = normalize_rows(rng.normal(size=(500, dim)).astype(np.float32))
+        q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        q_rotated = (q @ rotation.T).astype(np.float32)
+
+        db_packed = quantize_qjl(db_rotated, bits=bits)
+        lut = build_query_lut(q_rotated[0], bits=bits)
+
+        scores = score_shard_lut(db_packed, lut, dim=dim, bits=bits)
+        expected_idx = np.argpartition(scores, -10)[-10:]
+        expected_idx = expected_idx[np.argsort(scores[expected_idx])[::-1]]
+
+        top_idx, top_scores = topk_shard_lut(db_packed, lut, dim=dim, bits=bits, k=10)
+
+        np.testing.assert_array_equal(top_idx, expected_idx.astype(np.int32))
+        np.testing.assert_allclose(top_scores, scores[expected_idx], rtol=1e-6, atol=1e-6)
+
+    def test_topk_matches_full_scores_for_2bit_and_4bit(self) -> None:
+        rng = np.random.default_rng(123)
+
+        for bits in (2, 4):
+            dim = 64
+            rotation = generate_rotation(dim, seed=7)
+            db = normalize_rows(rng.normal(size=(120, dim)).astype(np.float32))
+            q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+
+            db_rotated = (db @ rotation.T).astype(np.float32)
+            q_rotated = (q @ rotation.T).astype(np.float32)
+
+            db_packed = quantize_qjl(db_rotated, bits=bits)
+            lut = build_query_lut(q_rotated[0], bits=bits)
+
+            scores = score_shard_lut(db_packed, lut, dim=dim, bits=bits)
+            expected_idx = np.argpartition(scores, -7)[-7:]
+            expected_idx = expected_idx[np.argsort(scores[expected_idx])[::-1]]
+
+            top_idx, top_scores = topk_shard_lut(db_packed, lut, dim=dim, bits=bits, k=7)
+
+            np.testing.assert_array_equal(top_idx, expected_idx.astype(np.int32))
+            np.testing.assert_allclose(top_scores, scores[expected_idx], rtol=1e-6, atol=1e-6)
+
+    def test_threaded_native_topk_matches_single_thread(self) -> None:
+        from turborag._cscore_wrapper import build_fused_lut_c, score_fused_3bit_topk_c
+
+        dim = 384
+        bits = 3
+        rng = np.random.default_rng(99)
+        rotation = generate_rotation(dim, seed=7)
+
+        db = normalize_rows(rng.normal(size=(4000, dim)).astype(np.float32))
+        q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        q_rotated = (q @ rotation.T).astype(np.float32)
+
+        db_packed = quantize_qjl(db_rotated, bits=bits)
+        lut = build_query_lut(q_rotated[0], bits=bits)
+        fused3 = build_fused_lut_c(lut, dim, bits)
+        assert fused3 is not None
+
+        single = score_fused_3bit_topk_c(db_packed, fused3, lut, dim, 10, num_threads=1)
+        threaded = score_fused_3bit_topk_c(db_packed, fused3, lut, dim, 10, num_threads=4)
+
+        assert single is not None
+        assert threaded is not None
+
+        np.testing.assert_array_equal(threaded[0], single[0])
+        np.testing.assert_allclose(threaded[1], single[1], rtol=1e-6, atol=1e-6)
+
+    def test_float32_native_topk_matches_double_path(self) -> None:
+        from turborag._cscore_wrapper import (
+            build_fused_lut_c,
+            build_fused_lut_12bit_f32_c,
+            build_fused_lut_f32_c,
+            score_fused_3bit_topk_c,
+            score_fused_3bit_topk_12bit_f32_c,
+            score_fused_3bit_topk_f32_c,
+        )
+
+        dim = 384
+        bits = 3
+        rng = np.random.default_rng(1234)
+        rotation = generate_rotation(dim, seed=7)
+
+        db = normalize_rows(rng.normal(size=(5000, dim)).astype(np.float32))
+        q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        q_rotated = (q @ rotation.T).astype(np.float32)
+        db_packed = quantize_qjl(db_rotated, bits=bits)
+        lut = build_query_lut(q_rotated[0], bits=bits)
+        fused3 = build_fused_lut_c(lut, dim, bits)
+        fused3_f32 = build_fused_lut_f32_c(lut.astype(np.float32), dim, bits)
+        fused12_f32 = build_fused_lut_12bit_f32_c(lut.astype(np.float32), dim)
+        assert fused3 is not None
+        assert fused3_f32 is not None
+        assert fused12_f32 is not None
+
+        exact = score_fused_3bit_topk_c(db_packed, fused3, lut, dim, 20, num_threads=1)
+        approx = score_fused_3bit_topk_f32_c(db_packed, fused3_f32, lut.astype(np.float32), dim, 20)
+        fused12 = score_fused_3bit_topk_12bit_f32_c(db_packed, fused12_f32, dim, 20)
+
+        assert exact is not None
+        assert approx is not None
+        assert fused12 is not None
+        np.testing.assert_array_equal(approx[0], exact[0])
+        np.testing.assert_allclose(approx[1], exact[1], rtol=1e-4, atol=1e-4)
+        np.testing.assert_array_equal(fused12[0], exact[0])
+        np.testing.assert_allclose(fused12[1], exact[1], rtol=1e-4, atol=1e-4)

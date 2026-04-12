@@ -2,6 +2,8 @@
 
 ## Latest Results
 
+Latest local reproducible runs on `arm64` as of 2026-04-12. The exact row below is from the current native threaded exact path with the 12-bit half-group fused scorer.
+
 ### Small Scale (1K vectors, 128-dim, 100 queries, k=10, 4-bit)
 
 | Backend | Recall@10 | MRR | QPS | Memory |
@@ -16,19 +18,21 @@
 
 | Backend | Recall@10 | MRR | QPS | Memory |
 |---|---|---|---|---|
-| TurboRAG exact | 1.000 | 1.000 | 67 | 18.3 MB |
-| TurboRAG fast | 0.975 | 0.975 | 274 | 18.3 MB |
-| Exact float32 | 1.000 | 1.000 | 240 | 146.5 MB |
-| FAISS Flat | 1.000 | 1.000 | 232 | 146.5 MB |
-| FAISS HNSW | 0.645 | 0.645 | 1,928 | 152.6 MB |
+| TurboRAG exact | 1.000 | 1.000 | 66 | 18.3 MB |
+| TurboRAG fast | 0.975 | 0.975 | 131 | 18.3 MB |
+| Exact float32 | 1.000 | 1.000 | 73 | 146.5 MB |
+| FAISS Flat | 1.000 | 1.000 | 60 | 146.5 MB |
+| FAISS HNSW | 0.610 | 0.610 | 771 | 152.6 MB |
 
-TurboRAG maintains perfect recall in exact mode at both scales. The `fast` mode uses a binary sketch head with POPCNT pre-filtering followed by LUT refine, achieving 4x throughput over exact with 97.5% recall. FAISS HNSW trades recall (0.645) for throughput at large scale.
+TurboRAG maintains perfect recall in exact mode at both scales. The `fast` mode uses a binary sketch head with POPCNT pre-filtering followed by LUT refine, reaching about 2x the throughput of current exact with 97.5% recall on the synthetic 100K fixture.
+Repeated exact-only runs on the same 100K fixture now median at 70.98 QPS in the main benchmark environment.
 
 ---
 
-TurboRAG now supports two benchmark modes:
+TurboRAG now supports three benchmark modes:
 
 - single-backend evaluation of TurboRAG itself,
+- explicit TurboRAG `exact` / `fast` / `auto` mode benchmarking,
 - side-by-side comparison against exact float search and optional FAISS baselines.
 
 ## Install
@@ -73,6 +77,17 @@ Each line of `queries.jsonl` must contain:
 turborag benchmark \
   --index ./turborag_sidecar \
   --queries ./queries.jsonl \
+  --turborag-mode exact \
+  --k 10
+```
+
+Exact mode uses the native threaded 3-bit scorer by default. Override its thread count with:
+
+```bash
+TURBORAG_EXACT_THREADS=8 turborag benchmark \
+  --index ./turborag_sidecar \
+  --queries ./queries.jsonl \
+  --turborag-mode exact \
   --k 10
 ```
 
@@ -84,6 +99,7 @@ Exact baseline only:
 turborag benchmark \
   --index ./turborag_sidecar \
   --queries ./queries.jsonl \
+  --turborag-mode exact \
   --dataset ./corpus.jsonl \
   --baseline exact \
   --k 10
@@ -95,6 +111,7 @@ Exact plus FAISS baselines:
 turborag benchmark \
   --index ./turborag_sidecar \
   --queries ./queries.jsonl \
+  --turborag-mode fast \
   --dataset ./corpus.jsonl \
   --baseline exact \
   --baseline faiss-flat \
@@ -157,5 +174,4 @@ What exists now:
 What still does not exist:
 
 - published real-world benchmark results checked into the repo,
-- the exact headline benchmark claims from the PDF,
 - automated CPU/GPU matrix benchmarking across large external datasets.

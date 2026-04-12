@@ -289,6 +289,13 @@ def describe_index(index_path: Path) -> None:
     help="Number of results per query for recall/MRR calculation.",
 )
 @click.option(
+    "--turborag-mode",
+    type=click.Choice(["auto", "exact", "fast"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="TurboRAG search mode to benchmark.",
+)
+@click.option(
     "--json-output",
     is_flag=True,
     default=False,
@@ -301,6 +308,7 @@ def benchmark(
     baselines: tuple[str, ...],
     output_path: Path | None,
     k: int,
+    turborag_mode: str,
     json_output: bool,
 ) -> None:
     """Run a retrieval benchmark against a TurboRAG index.
@@ -321,7 +329,7 @@ def benchmark(
     index = TurboIndex.open(str(index_path))
     cases = load_query_cases(queries_path)
     suite = BenchmarkSuite(cases)
-    turbo_backend = TurboIndexBackend(index=index)
+    turbo_backend = TurboIndexBackend(index=index, mode=turborag_mode.lower(), label=f"turborag-{turborag_mode.lower()}")
 
     if baselines and dataset_path is None:
         raise click.UsageError("--dataset is required when using --baseline")
@@ -343,7 +351,7 @@ def benchmark(
         else:
             click.echo(comparison.summary())
     else:
-        report = suite.run(index, k=k)
+        report = suite.run_backend(turbo_backend, k=k)
         payload = report.to_dict()
         if output_path is not None:
             write_benchmark_artifact(output_path, payload)

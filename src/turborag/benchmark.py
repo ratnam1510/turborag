@@ -18,6 +18,7 @@ FloatMatrix = NDArray[np.float32]
 FloatVector = NDArray[np.float32]
 
 DEFAULT_BASELINES = ("exact", "faiss-flat", "faiss-hnsw", "faiss-ivfpq")
+WARMUP_QUERIES = 5
 
 
 class SearchBackend(Protocol):
@@ -288,6 +289,11 @@ class BenchmarkSuite:
 
     def run_backend(self, backend: SearchBackend, k: int = 10) -> BenchmarkReport:
         case_results: list[CaseResult] = []
+
+        warmup_count = min(WARMUP_QUERIES, len(self.cases))
+        for case in self.cases[:warmup_count]:
+            backend.search(case.query_vector, k=k)
+
         t0 = time.perf_counter()
 
         for case in self.cases:
