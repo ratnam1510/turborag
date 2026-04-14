@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turborag"
-version = "0.4.0"
+version = "0.4.2"
 description = "Compressed vector and graph-augmented retrieval engine with adaptive two-stage search, implementing TurboQuant/QJL quantization from Google Research."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = "MIT"
 authors = [
   { name = "Ratnam Shah" }
 ]
