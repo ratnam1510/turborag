@@ -2,7 +2,7 @@
 
 ## Latest Results
 
-Latest local reproducible runs on `arm64` as of 2026-04-12. The exact row below is from the current native threaded exact path with the 12-bit half-group fused scorer.
+Latest local reproducible runs as of 2026-04-20. The exact row uses the weighted integer scorer — a LUT-free arithmetic kernel that exploits the affine-uniform quantizer to score packed 3-bit vectors with direct `weight × level` dot products.
 
 ### Small Scale (1K vectors, 128-dim, 100 queries, k=10, 4-bit)
 
@@ -16,16 +16,15 @@ Latest local reproducible runs on `arm64` as of 2026-04-12. The exact row below 
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
-| Backend | Recall@10 | MRR | QPS | Memory |
+| Backend | Recall@10 | QPS (single) | QPS (batch) | Memory |
 |---|---|---|---|---|
-| TurboRAG exact | 1.000 | 1.000 | 66 | 18.3 MB |
-| TurboRAG fast | 0.975 | 0.975 | 131 | 18.3 MB |
-| Exact float32 | 1.000 | 1.000 | 73 | 146.5 MB |
-| FAISS Flat | 1.000 | 1.000 | 60 | 146.5 MB |
-| FAISS HNSW | 0.610 | 0.610 | 771 | 152.6 MB |
+| TurboRAG exact | 1.000 | 171 | 114 | 19.2 MB |
+| TurboRAG fast | 0.965 | 158 | — | 19.2 MB |
+| Exact float32 (NumPy) | 1.000 | 64 | — | 153.6 MB |
+| FAISS Flat | 1.000 | 80 | — | 146.5 MB |
+| FAISS HNSW | 0.575 | 1,737 | — | 152.6 MB |
 
-TurboRAG maintains perfect recall in exact mode at both scales. The `fast` mode uses a binary sketch head with POPCNT pre-filtering followed by LUT refine, reaching about 2x the throughput of current exact with 97.5% recall on the synthetic 100K fixture.
-Repeated exact-only runs on the same 100K fixture now median at 70.98 QPS in the main benchmark environment.
+TurboRAG maintains perfect recall in exact mode at both scales. On the latest reproducible 100K rerun, the weighted integer scorer reaches 171 QPS for single-query exact search and 114 QPS for `search_batch`, while `fast` reaches 158 QPS at 96.5% recall.
 
 ---
 

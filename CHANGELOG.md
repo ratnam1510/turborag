@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - 2026-04-20
+
+### Performance
+
+- **Weighted integer scorer** — replaced LUT-based exact search with a direct arithmetic kernel for 3-bit. Exploits the affine-uniform quantizer identity (`score = Σ weight[d] × level[d] + bias`) to eliminate all table lookups. Machine-agnostic: auto-vectorizes to SSE/AVX on x86 and NEON on ARM via compiler `-O3 -march=native`.
+- **Batch exact search** — vectorized query preparation (matrix rotation + weight building) combined with the native batch weighted C kernel. The latest local 100K rerun measured ~114 QPS with 100% recall.
+- Single-query exact mode now measures ~171 QPS on the same 100K fixture with zero additional memory, outperforming the local float32 baseline on that run.
+
 ## 0.4.2 - 2026-04-12
 
 ### Performance

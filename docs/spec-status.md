@@ -63,13 +63,13 @@ The original local reference PDF (`TurboRAG Specification - Understanding Google
 
 ### Large Scale (100K×384, 3-bit)
 
-| | Recall@10 | QPS |
-|---|---|---|
-| **TurboRAG exact 3-bit** | 1.000 | 66 |
-| **TurboRAG fast 3-bit** | 0.975 | 131 |
-| Exact float32 | 1.000 | 73 |
+| | Recall@10 | QPS (single) | QPS (batch) |
+|---|---|---|---|
+| **TurboRAG exact 3-bit** | 1.000 | 171 | 114 |
+| **TurboRAG fast 3-bit** | 0.965 | 158 | — |
+| Exact float32 | 1.000 | 64 | — |
 
-TurboRAG achieves perfect recall at both scales in exact mode. The large-scale exact path now uses native threaded 12-bit half-group fused top-k scanning by default on the C scorer. Repeated exact-only runs on the benchmark fixture median at 70.98 QPS.
+TurboRAG achieves perfect recall at both scales in exact mode. The large-scale exact path now uses the weighted integer scorer — a LUT-free arithmetic kernel that scores packed 3-bit vectors with direct `weight × level` dot products. On the latest 100K local rerun it outperforms the float32 exact baseline while staying at 19.2 MB instead of 153.6 MB.
 
 ## Important Precision Note
 

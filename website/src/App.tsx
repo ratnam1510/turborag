@@ -311,11 +311,11 @@ function Hero() {
               <span className="metric__label">Recall@10 (exact)</span>
             </div>
             <div className="metric">
-              <span className="metric__value">6,209</span>
-              <span className="metric__label">Queries/sec</span>
+              <span className="metric__value">171</span>
+              <span className="metric__label">QPS (exact)</span>
             </div>
             <div className="metric">
-              <span className="metric__value">18.3</span>
+              <span className="metric__value">19.2</span>
               <span className="metric__unit">MB</span>
               <span className="metric__label">100K vectors</span>
             </div>
@@ -334,8 +334,8 @@ function Features() {
   const features = [
     {
       title: 'Adaptive Search',
-      description: 'Two-stage retrieval with binary sketch pre-filter and LUT refinement. Automatically selects exact or fast mode based on index size.',
-      detail: 'SimHash + POPCNT'
+      description: 'Two-stage retrieval with weighted integer scorer for exact mode and binary sketch pre-filter for fast mode. Automatically selects the best strategy based on index size.',
+      detail: 'LUT-free · Auto-SIMD'
     },
     {
       title: 'Graph-Augmented',
@@ -407,11 +407,10 @@ function Performance() {
   ]
 
   const largeBenchmarks: BenchmarkRow[] = [
-    { name: 'TurboRAG exact', recall: '1.000', qps: '67', memory: '18.3 MB', highlight: true, note: 'Perfect recall guaranteed' },
-    { name: 'TurboRAG fast', recall: '0.975', qps: '274', memory: '18.3 MB', highlight: true, note: '4x faster, 97.5% recall' },
-    { name: 'Exact float32', recall: '1.000', qps: '240', memory: '146.5 MB', highlight: false },
-    { name: 'FAISS Flat', recall: '1.000', qps: '232', memory: '146.5 MB', highlight: false },
-    { name: 'FAISS HNSW', recall: '0.645', qps: '1,928', memory: '152.6 MB', highlight: false, note: 'Recall drops significantly' },
+    { name: 'TurboRAG exact', recall: '1.000', qps: '171', memory: '19.2 MB', highlight: true, note: '100% recall · 114 batch QPS' },
+    { name: 'TurboRAG fast', recall: '0.965', qps: '158', memory: '19.2 MB', highlight: true, note: 'Near-exact speed, lower recall' },
+    { name: 'FAISS Flat', recall: '1.000', qps: '80', memory: '146.5 MB', highlight: false },
+    { name: 'FAISS HNSW', recall: '0.575', qps: '1,737', memory: '152.6 MB', highlight: false, note: 'Recall drops significantly' },
   ]
 
   const benchmarks = activeScale === 'small' ? smallBenchmarks : largeBenchmarks
@@ -475,9 +474,9 @@ function Performance() {
           
           {activeScale === 'large' && (
             <div className="benchmark-highlight">
-              <strong>Key insight:</strong> At 100K scale, TurboRAG uses 8x less memory (18.3 MB vs 146.5 MB) 
-              while maintaining perfect recall in exact mode. Fast mode achieves 97.5% recall with 4x throughput.
-              FAISS HNSW drops to 64.5% recall.
+              <strong>Key insight:</strong> At 100K scale, TurboRAG uses 8x less memory (19.2 MB vs 153.6 MB) 
+              while maintaining perfect recall in exact mode at 171 QPS on this local rerun.
+              The weighted integer scorer now beats the float32 exact baseline while staying compressed.
             </div>
           )}
         </Reveal>
@@ -1096,15 +1095,14 @@ TurboRAG supports three search modes: \`auto\` (default), \`exact\`, and \`fast\
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
-| Backend | Recall@10 | MRR | QPS | Memory |
+| Backend | Recall@10 | QPS (single) | QPS (batch) | Memory |
 |---|---|---|---|---|
-| **TurboRAG exact** | **1.000** | **1.000** | **67** | **18.3 MB** |
-| **TurboRAG fast** | **0.975** | **0.975** | **274** | **18.3 MB** |
-| Exact float32 | 1.000 | 1.000 | 240 | 146.5 MB |
-| FAISS Flat | 1.000 | 1.000 | 232 | 146.5 MB |
-| FAISS HNSW | 0.645 | 0.645 | 1,928 | 152.6 MB |
+| **TurboRAG exact** | **1.000** | **171** | **114** | **19.2 MB** |
+| **TurboRAG fast** | **0.965** | **158** | — | **19.2 MB** |
+| FAISS Flat | 1.000 | 80 | — | 146.5 MB |
+| FAISS HNSW | 0.575 | 1,737 | — | 152.6 MB |
 
-TurboRAG maintains perfect recall in exact mode at both scales. The \`fast\` mode uses a binary sketch head with POPCNT pre-filtering followed by LUT refine, achieving 4x throughput over exact with 97.5% recall.
+TurboRAG exact mode uses the weighted integer scorer — a LUT-free arithmetic kernel that auto-vectorizes on any CPU. On the latest local 100K rerun it reaches 171 QPS single-query and 114 QPS batch while preserving 100% recall at 8x memory compression.
 
 ## Running Benchmarks
 
@@ -1616,10 +1614,10 @@ The implementation is built from:
 
 | | Recall@10 | QPS |
 |---|---|---|
-| **TurboRAG exact** | 1.000 | 67 |
-| **TurboRAG fast** | 0.975 | 274 |
-| Exact float32 | 1.000 | 240 |
-| FAISS HNSW | 0.645 | 1,928 |
+| **TurboRAG exact** | 1.000 | 171 |
+| **TurboRAG fast** | 0.965 | 158 |
+| Exact float32 | 1.000 | 64 |
+| FAISS HNSW | 0.575 | 1,737 |
 
 TurboRAG achieves perfect recall at both scales with 8x memory compression.`
   },
@@ -2042,12 +2040,12 @@ Performance benchmarks against a **100K vector index** (384 dimensions, 3-bit qu
 
 | Metric | Value |
 |---|---|
-| **Float32 baseline** | 146.5 MB |
-| **TurboRAG index** | 14.3 MB |
-| **Compression ratio** | **10.7x** |
-| **Memory savings** | **91%** |
+| **Float32 baseline** | 153.6 MB |
+| **TurboRAG index** | 19.2 MB |
+| **Compression ratio** | **8x** |
+| **Memory savings** | **87.5%** |
 
-The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead). The actual compressed index uses only **14.3 MB** for 100K vectors.
+The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead). The actual compressed index uses only **19.2 MB** for 100K vectors.
 
 ### Client Memory Footprint
 
@@ -2063,7 +2061,7 @@ The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead).
 | **Node.js** | 30.7 QPS (32.6ms) | 5.7 QPS | 1,307 rec/s |
 | **Ruby** | 25.8 QPS (38.8ms) | 6.3 QPS | 1,013 rec/s |
 
-> **Why this matters**: TurboRAG achieves **10x memory compression** while maintaining high recall (0.975+). Client choice has minimal impact — the server handles the heavy lifting. All clients use native HTTP with zero external dependencies.
+> **Why this matters**: TurboRAG achieves **8x memory compression** while maintaining perfect recall in exact mode and 96.5% recall in fast mode. Client choice has minimal impact — the server handles the heavy lifting. All clients use native HTTP with zero external dependencies.
 
 ### Run Your Own Benchmarks
 

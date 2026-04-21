@@ -194,6 +194,42 @@ class TestTurboIndexBatchSearch:
         results = index.search_batch(queries, k=5)
         assert results == [[], [], []]
 
+    def test_batch_search_uses_native_weighted_batch_scorer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from turborag import _cscore_wrapper as cscore_wrapper
+        from turborag.index import TurboIndex
+
+        dim = 16
+        rng = np.random.default_rng(123)
+        index = TurboIndex(dim=dim, bits=3, seed=7)
+
+        vectors = rng.normal(size=(256, dim)).astype(np.float32)
+        ids = [f"chunk-{i}" for i in range(256)]
+        index.add(vectors, ids)
+
+        queries = rng.normal(size=(4, dim)).astype(np.float32)
+        individual = [index.search(queries[i], k=5) for i in range(len(queries))]
+
+        real_batch = cscore_wrapper.score_3bit_weighted_batch_topk_c
+        batch_calls = 0
+
+        def counted_batch(*args, **kwargs):
+            nonlocal batch_calls
+            batch_calls += 1
+            return real_batch(*args, **kwargs)
+
+        def fail_single(*args, **kwargs):
+            raise AssertionError("search_batch should use the native weighted batch scorer")
+
+        monkeypatch.setattr(cscore_wrapper, "score_3bit_weighted_batch_topk_c", counted_batch)
+        monkeypatch.setattr(cscore_wrapper, "score_3bit_weighted_topk_c", fail_single)
+
+        batch = index.search_batch(queries, k=5)
+
+        assert batch_calls == 1
+        assert len(batch) == len(individual)
+        for batch_hits, individual_hits in zip(batch, individual, strict=False):
+            assert [hit[0] for hit in batch_hits] == [hit[0] for hit in individual_hits]
+
 
 class TestLUTPerformanceRegression:
     """Ensure the LUT path works correctly and efficiently at realistic sizes."""
@@ -249,6 +285,14 @@ class TestLUTPerformanceRegression:
 
 
 class TestTopKScoring:
+    def test_auto_exact_threads_caps_at_eight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from turborag._cscore_wrapper import _resolve_exact_threads
+
+        monkeypatch.delenv("TURBORAG_EXACT_THREADS", raising=False)
+        monkeypatch.setattr("os.cpu_count", lambda: 10)
+
+        assert _resolve_exact_threads(None) == 8
+
     def test_topk_matches_full_scores_for_3bit(self) -> None:
         dim = 384
         bits = 3
@@ -328,10 +372,10 @@ class TestTopKScoring:
     def test_float32_native_topk_matches_double_path(self) -> None:
         from turborag._cscore_wrapper import (
             build_fused_lut_c,
-            build_fused_lut_12bit_f32_c,
+            build_fused_lut_6bit_f32_c,
             build_fused_lut_f32_c,
             score_fused_3bit_topk_c,
-            score_fused_3bit_topk_12bit_f32_c,
+            score_fused_3bit_topk_6bit_f32_c,
             score_fused_3bit_topk_f32_c,
         )
 
@@ -348,20 +392,131 @@ class TestTopKScoring:
         db_packed = quantize_qjl(db_rotated, bits=bits)
         lut = build_query_lut(q_rotated[0], bits=bits)
         fused3 = build_fused_lut_c(lut, dim, bits)
+        fused6_f32 = build_fused_lut_6bit_f32_c(lut.astype(np.float32), dim)
         fused3_f32 = build_fused_lut_f32_c(lut.astype(np.float32), dim, bits)
-        fused12_f32 = build_fused_lut_12bit_f32_c(lut.astype(np.float32), dim)
         assert fused3 is not None
+        assert fused6_f32 is not None
         assert fused3_f32 is not None
-        assert fused12_f32 is not None
 
         exact = score_fused_3bit_topk_c(db_packed, fused3, lut, dim, 20, num_threads=1)
+        fused6 = score_fused_3bit_topk_6bit_f32_c(db_packed, fused6_f32, dim, 20)
         approx = score_fused_3bit_topk_f32_c(db_packed, fused3_f32, lut.astype(np.float32), dim, 20)
-        fused12 = score_fused_3bit_topk_12bit_f32_c(db_packed, fused12_f32, dim, 20)
 
         assert exact is not None
+        assert fused6 is not None
         assert approx is not None
-        assert fused12 is not None
+        np.testing.assert_array_equal(fused6[0], exact[0])
+        np.testing.assert_allclose(fused6[1], exact[1], rtol=1e-4, atol=1e-4)
         np.testing.assert_array_equal(approx[0], exact[0])
         np.testing.assert_allclose(approx[1], exact[1], rtol=1e-4, atol=1e-4)
-        np.testing.assert_array_equal(fused12[0], exact[0])
-        np.testing.assert_allclose(fused12[1], exact[1], rtol=1e-4, atol=1e-4)
+
+    def test_weighted_scorer_matches_lut_exact(self) -> None:
+        """Weighted integer scorer must produce identical top-k as LUT scorer."""
+        from turborag._cscore_wrapper import (
+            build_fused_lut_6bit_f32_c,
+            score_3bit_weighted_topk_c,
+            score_fused_3bit_topk_6bit_f32_c,
+        )
+        from turborag.fast_kernels import build_query_weights_f32
+
+        dim = 384
+        bits = 3
+        rng = np.random.default_rng(99)
+        rotation = generate_rotation(dim, seed=7)
+
+        db = normalize_rows(rng.normal(size=(10000, dim)).astype(np.float32))
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        db_packed = quantize_qjl(db_rotated, bits=bits)
+
+        for qi in range(20):
+            q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+            q_rotated = (q @ rotation.T).astype(np.float32)[0]
+
+            # LUT path (6-bit fused)
+            lut_f32 = build_query_lut(q_rotated, bits=bits).astype(np.float32)
+            fused6 = build_fused_lut_6bit_f32_c(lut_f32, dim)
+            assert fused6 is not None
+            lut_result = score_fused_3bit_topk_6bit_f32_c(db_packed, fused6, dim, 10)
+            assert lut_result is not None
+
+            # Weighted path
+            weights, bias = build_query_weights_f32(q_rotated, value_range=1.0)
+            weighted_result = score_3bit_weighted_topk_c(db_packed, weights, bias, dim=dim, k=10)
+            assert weighted_result is not None
+
+            # Same top-k IDs
+            assert set(int(i) for i in lut_result[0]) == set(int(i) for i in weighted_result[0]), \
+                f"Query {qi}: weighted scorer returned different top-k than LUT"
+
+    def test_weighted_scorer_threaded_matches_single(self) -> None:
+        """Threaded weighted scorer must match single-threaded."""
+        from turborag._cscore_wrapper import score_3bit_weighted_topk_c
+        from turborag.fast_kernels import build_query_weights_f32
+
+        dim = 384
+        rng = np.random.default_rng(42)
+        rotation = generate_rotation(dim, seed=7)
+
+        db = normalize_rows(rng.normal(size=(50000, dim)).astype(np.float32))
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        db_packed = quantize_qjl(db_rotated, bits=3)
+
+        q = normalize_rows(rng.normal(size=(1, dim)).astype(np.float32))
+        q_rotated = (q @ rotation.T).astype(np.float32)[0]
+        weights, bias = build_query_weights_f32(q_rotated, value_range=1.0)
+
+        single = score_3bit_weighted_topk_c(db_packed, weights, bias, dim=dim, k=10, num_threads=1)
+        threaded = score_3bit_weighted_topk_c(db_packed, weights, bias, dim=dim, k=10, num_threads=8)
+
+        assert single is not None
+        assert threaded is not None
+        np.testing.assert_array_equal(threaded[0], single[0])
+        np.testing.assert_allclose(threaded[1], single[1], rtol=1e-5, atol=1e-5)
+
+    def test_weighted_batch_scorer_matches_single_query_path(self) -> None:
+        from turborag._cscore_wrapper import (
+            score_3bit_weighted_batch_topk_c,
+            score_3bit_weighted_topk_c,
+        )
+        from turborag.fast_kernels import build_query_weights_f32
+
+        dim = 384
+        rng = np.random.default_rng(1234)
+        rotation = generate_rotation(dim, seed=7)
+
+        db = normalize_rows(rng.normal(size=(12000, dim)).astype(np.float32))
+        db_rotated = (db @ rotation.T).astype(np.float32)
+        db_packed = quantize_qjl(db_rotated, bits=3)
+
+        queries = normalize_rows(rng.normal(size=(6, dim)).astype(np.float32))
+        rotated_queries = (queries @ rotation.T).astype(np.float32)
+        weights_batch = []
+        biases = []
+        for rotated in rotated_queries:
+            weights, bias = build_query_weights_f32(rotated, value_range=1.0)
+            weights_batch.append(weights)
+            biases.append(bias)
+
+        batch = score_3bit_weighted_batch_topk_c(
+            db_packed,
+            np.ascontiguousarray(weights_batch, dtype=np.float32),
+            np.ascontiguousarray(biases, dtype=np.float32),
+            dim=dim,
+            k=10,
+            num_threads=1,
+        )
+        assert batch is not None
+
+        for qi, rotated in enumerate(rotated_queries):
+            weights, bias = build_query_weights_f32(rotated, value_range=1.0)
+            single = score_3bit_weighted_topk_c(
+                db_packed,
+                weights,
+                bias,
+                dim=dim,
+                k=10,
+                num_threads=1,
+            )
+            assert single is not None
+            np.testing.assert_array_equal(batch[qi][0], single[0])
+            np.testing.assert_allclose(batch[qi][1], single[1], rtol=1e-5, atol=1e-5)

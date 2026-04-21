@@ -112,7 +112,7 @@ loaded_index = TurboIndex.load("./my_index")
 # Exact mode - guaranteed perfect recall
 results = index.search(query, k=10, mode="exact")
 
-# Fast mode - binary sketch pre-filter + LUT refine (97.5% recall, 4x faster)
+# Fast mode - binary sketch pre-filter + refine (96.5% recall)
 results = index.search(query, k=10, mode="fast")
 
 # Auto mode (default) - selects best strategy based on index size
@@ -1077,16 +1077,16 @@ index/
 
 | Backend | Recall@10 | QPS | Memory |
 |---------|-----------|-----|--------|
-| **TurboRAG exact** | **1.000** | **67** | **18.3 MB** |
-| **TurboRAG fast** | **0.975** | **274** | **18.3 MB** |
-| Exact float32 | 1.000 | 240 | 146.5 MB |
-| FAISS HNSW | 0.645 | 1,928 | 152.6 MB |
+| **TurboRAG exact** | **1.000** | **171** | **19.2 MB** |
+| **TurboRAG fast** | **0.965** | **158** | **19.2 MB** |
+| Exact float32 | 1.000 | 64 | 153.6 MB |
+| FAISS HNSW | 0.575 | 1,737 | 152.6 MB |
 
 **Key advantages:**
-- 8x memory compression (18.3 MB vs 146.5 MB)
+- 8x memory compression (19.2 MB vs 153.6 MB)
 - Perfect recall in exact mode
-- 97.5% recall with 4x speedup in fast mode
-- 64% higher recall than HNSW at large scale
+- 96.5% recall in fast mode
+- Substantially higher recall than HNSW at large scale
 
 ---
 
@@ -1232,21 +1232,39 @@ python -c "from turborag._cscore_wrapper import is_available; print('C kernel:',
 
 ---
 
-## Client SDK Benchmarks
+## Core Engine Benchmarks (v0.5.0 — Weighted Integer Scorer)
 
-Performance benchmarks against a 100K vector index (384 dimensions, 3-bit quantization).
+Large scale: 100K vectors, 384-dim, 200 queries, k=10, 3-bit.
+
+| Backend | Recall@10 | QPS | Memory | Notes |
+|---------|-----------|-----|--------|-------|
+| **TurboRAG exact** | **1.000** | **171 single / 114 batch** | **19.2 MB** | Weighted integer scorer · LUT-free · auto-SIMD |
+| **TurboRAG fast** | **0.965** | **158** | **19.2 MB** | Binary sketch pre-filter |
+| Float32 exact | 1.000 | 64 | 153.6 MB | Baseline brute-force |
+| FAISS Flat | 1.000 | 80 | 146.5 MB | |
+| FAISS HNSW | 0.575 | 1,737 | 152.6 MB | Recall drops significantly |
+
+**Key technical advance (v0.5.0):** The weighted integer scorer replaces LUT-based scoring for exact mode.
+It uses affine-uniform weight mapping to integer arithmetic, eliminating lookup-table overhead entirely.
+Machine-agnostic: auto-vectorizes on any CPU (x86 SSE/AVX, ARM NEON) without hand-written SIMD intrinsics.
 
 ### Memory Usage (The Key Metric)
 
 | Metric | Value |
 |--------|-------|
-| Float32 baseline | 146.5 MB |
-| TurboRAG index | 14.3 MB |
-| **Compression ratio** | **10.7x** |
-| **Memory savings** | **91%** |
+| Float32 baseline | 153.6 MB |
+| TurboRAG index | 19.2 MB |
+| **Compression ratio** | **8x** |
+| **Memory savings** | **87.5%** |
 
 The TurboRAG server runs at ~73 MB total RSS (includes Python/uvicorn overhead).
-The actual compressed index uses only 14.3 MB for 100K vectors.
+The actual compressed index uses only 19.2 MB for 100K vectors.
+
+---
+
+## Client SDK Benchmarks
+
+Performance benchmarks against a 100K vector index (384 dimensions, 3-bit quantization).
 
 ### Client Memory Footprint
 
@@ -1262,7 +1280,7 @@ The actual compressed index uses only 14.3 MB for 100K vectors.
 | Node.js | 30.7 QPS (32.6ms avg) | 5.7 QPS | 1,307 rec/s |
 | Ruby | 25.8 QPS (38.8ms avg) | 6.3 QPS | 1,013 rec/s |
 
-Why this matters: TurboRAG achieves 10x memory compression while maintaining high recall (0.975+).
+Why this matters: TurboRAG achieves 8x memory compression while maintaining perfect recall in exact mode (1.000) and 96.5% in fast mode.
 Client choice has minimal impact — the server handles the heavy lifting.
 
 ### Run Benchmarks

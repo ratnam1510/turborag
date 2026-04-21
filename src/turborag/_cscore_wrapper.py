@@ -32,7 +32,9 @@ def _resolve_exact_threads(num_threads: int | None) -> int:
         except ValueError:
             return 1
     cpu_count = os.cpu_count() or 1
-    return max(1, min(8, cpu_count))
+    # Exact search saturates before all logical CPUs on mixed-core laptops.
+    # Cap auto mode to avoid spilling onto slower efficiency cores by default.
+    return max(1, min(cpu_count, 8))
 
 
 def _find_or_compile() -> ctypes.CDLL | None:
@@ -146,8 +148,8 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.POINTER(ctypes.c_float),    # fused out
                 ctypes.c_int,                       # dim
             ]
-            _lib.build_fused_3bit_12bit_f32.restype = None
-            _lib.build_fused_3bit_12bit_f32.argtypes = [
+            _lib.build_fused_3bit_6bit_f32.restype = None
+            _lib.build_fused_3bit_6bit_f32.argtypes = [
                 ctypes.POINTER(ctypes.c_float),    # lut
                 ctypes.POINTER(ctypes.c_float),    # fused out
                 ctypes.c_int,                       # dim
@@ -192,10 +194,10 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.c_int,                       # k
                 ctypes.c_int,                       # num_threads
             ]
-            _lib.score_fused_3bit_topk_dispatch_12bit_f32.restype = ctypes.c_int
-            _lib.score_fused_3bit_topk_dispatch_12bit_f32.argtypes = [
+            _lib.score_fused_3bit_topk_dispatch_6bit_f32.restype = ctypes.c_int
+            _lib.score_fused_3bit_topk_dispatch_6bit_f32.argtypes = [
                 ctypes.POINTER(ctypes.c_uint8),    # packed_db
-                ctypes.POINTER(ctypes.c_float),    # fused12
+                ctypes.POINTER(ctypes.c_float),    # fused6
                 ctypes.POINTER(ctypes.c_int32),    # indices_out
                 ctypes.POINTER(ctypes.c_float),    # scores_out
                 ctypes.c_int,                       # n_vectors
@@ -213,6 +215,38 @@ def _get_lib() -> ctypes.CDLL | None:
                 ctypes.POINTER(ctypes.c_int32),    # distances_out
                 ctypes.c_int,                       # n_vectors
                 ctypes.c_int,                       # sketch_bytes
+            ]
+
+            # Weighted 3-bit scorer (no LUT, direct arithmetic)
+            _lib.score_3bit_weighted_topk_dispatch.restype = ctypes.c_int
+            _lib.score_3bit_weighted_topk_dispatch.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),    # packed_db
+                ctypes.POINTER(ctypes.c_float),    # weights
+                ctypes.c_float,                     # bias
+                ctypes.POINTER(ctypes.c_int32),    # indices_out
+                ctypes.POINTER(ctypes.c_float),    # scores_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # dim
+                ctypes.c_int,                       # bytes_per_vec
+                ctypes.c_int,                       # k
+                ctypes.c_int,                       # num_threads
+            ]
+
+            # Batch weighted 3-bit scorer
+            _lib.score_3bit_weighted_batch_topk_dispatch.restype = ctypes.c_int
+            _lib.score_3bit_weighted_batch_topk_dispatch.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),    # packed_db
+                ctypes.POINTER(ctypes.c_float),    # weights_batch
+                ctypes.POINTER(ctypes.c_float),    # biases
+                ctypes.POINTER(ctypes.c_int32),    # indices_out
+                ctypes.POINTER(ctypes.c_float),    # scores_out
+                ctypes.POINTER(ctypes.c_int),      # found_out
+                ctypes.c_int,                       # n_vectors
+                ctypes.c_int,                       # dim
+                ctypes.c_int,                       # bytes_per_vec
+                ctypes.c_int,                       # k
+                ctypes.c_int,                       # n_queries
+                ctypes.c_int,                       # num_threads
             ]
 
             logger.info("C scoring kernel loaded successfully")
@@ -349,22 +383,22 @@ def build_fused_lut_f32_c(
     return fused
 
 
-def build_fused_lut_12bit_f32_c(
+def build_fused_lut_6bit_f32_c(
     lut: NDArray[np.float32],
     dim: int,
 ) -> NDArray[np.float32] | None:
-    """Build a 12-bit half-group fused LUT for 3-bit full-group scoring."""
+    """Build a 6-bit pair fused LUT for 3-bit full-group scoring."""
     lib = _get_lib()
     if lib is None or (dim & 7) != 0:
         return None
 
     n_groups = dim // 8
-    fused_size = n_groups * 2 * 4096
+    fused_size = n_groups * 4 * 64
 
     lut_c = np.ascontiguousarray(lut, dtype=np.float32)
     fused = np.zeros(fused_size, dtype=np.float32)
 
-    lib.build_fused_3bit_12bit_f32(
+    lib.build_fused_3bit_6bit_f32(
         lut_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
         fused.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
         ctypes.c_int(dim),
@@ -584,14 +618,14 @@ def score_fused_3bit_topk_f32_c(
     return indices[:found], scores[:found]
 
 
-def score_fused_3bit_topk_12bit_f32_c(
+def score_fused_3bit_topk_6bit_f32_c(
     packed_db: NDArray[np.uint8],
-    fused12: NDArray[np.float32],
+    fused6: NDArray[np.float32],
     dim: int,
     k: int,
     num_threads: int | None = None,
 ) -> tuple[NDArray[np.int32], NDArray[np.float32]] | None:
-    """Return top-k for 3-bit full-group packed DB using 12-bit half-group fused tables."""
+    """Return top-k for 3-bit full-group packed DB using 6-bit pair fused tables."""
     if k <= 0:
         return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
 
@@ -600,7 +634,7 @@ def score_fused_3bit_topk_12bit_f32_c(
         return None
 
     packed = packed_db if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS'] else np.ascontiguousarray(packed_db, dtype=np.uint8)
-    fused_c = fused12 if fused12.dtype == np.float32 and fused12.flags['C_CONTIGUOUS'] else np.ascontiguousarray(fused12, dtype=np.float32)
+    fused_c = fused6 if fused6.dtype == np.float32 and fused6.flags['C_CONTIGUOUS'] else np.ascontiguousarray(fused6, dtype=np.float32)
 
     if packed.ndim == 1:
         packed = packed.reshape(1, -1)
@@ -612,7 +646,7 @@ def score_fused_3bit_topk_12bit_f32_c(
     indices = np.empty(actual_k, dtype=np.int32)
     scores = np.empty(actual_k, dtype=np.float32)
 
-    found = lib.score_fused_3bit_topk_dispatch_12bit_f32(
+    found = lib.score_fused_3bit_topk_dispatch_6bit_f32(
         packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
         fused_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
         indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
@@ -666,6 +700,116 @@ def hamming_scan_c(
     )
 
     return distances
+
+
+def score_3bit_weighted_topk_c(
+    packed_db: NDArray[np.uint8],
+    weights: NDArray[np.float32],
+    bias: float,
+    dim: int,
+    k: int,
+    num_threads: int | None = None,
+) -> tuple[NDArray[np.int32], NDArray[np.float32]] | None:
+    """Return top-k using weighted integer dot product (no LUT). 3-bit only."""
+    if k <= 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    packed = packed_db if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS'] else np.ascontiguousarray(packed_db, dtype=np.uint8)
+    w = weights if weights.dtype == np.float32 and weights.flags['C_CONTIGUOUS'] else np.ascontiguousarray(weights, dtype=np.float32)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+    actual_k = min(k, n_vectors)
+    thread_count = _resolve_exact_threads(num_threads)
+    indices = np.empty(actual_k, dtype=np.int32)
+    scores = np.empty(actual_k, dtype=np.float32)
+
+    found = lib.score_3bit_weighted_topk_dispatch(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_float(bias),
+        indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(dim),
+        ctypes.c_int(bytes_per_vec),
+        ctypes.c_int(actual_k),
+        ctypes.c_int(thread_count),
+    )
+
+    if found < 0:
+        return None
+
+    return indices[:found], scores[:found]
+
+
+def score_3bit_weighted_batch_topk_c(
+    packed_db: NDArray[np.uint8],
+    weights_batch: NDArray[np.float32],
+    biases: NDArray[np.float32],
+    dim: int,
+    k: int,
+    num_threads: int | None = None,
+) -> list[tuple[NDArray[np.int32], NDArray[np.float32]]] | None:
+    """Return top-k for multiple queries using batch weighted scorer. 3-bit only.
+
+    Decodes each vector once and scores against all queries simultaneously.
+    """
+    n_queries = len(biases)
+    if k <= 0 or n_queries <= 0:
+        return [(np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)) for _ in range(n_queries)]
+
+    lib = _get_lib()
+    if lib is None:
+        return None
+
+    packed = packed_db if packed_db.dtype == np.uint8 and packed_db.flags['C_CONTIGUOUS'] else np.ascontiguousarray(packed_db, dtype=np.uint8)
+    wb = weights_batch if weights_batch.dtype == np.float32 and weights_batch.flags['C_CONTIGUOUS'] else np.ascontiguousarray(weights_batch, dtype=np.float32)
+    bb = biases if biases.dtype == np.float32 and biases.flags['C_CONTIGUOUS'] else np.ascontiguousarray(biases, dtype=np.float32)
+
+    if packed.ndim == 1:
+        packed = packed.reshape(1, -1)
+
+    n_vectors = packed.shape[0]
+    bytes_per_vec = packed.shape[1]
+    actual_k = min(k, n_vectors)
+    thread_count = _resolve_exact_threads(num_threads)
+
+    indices = np.empty(n_queries * actual_k, dtype=np.int32)
+    scores = np.empty(n_queries * actual_k, dtype=np.float32)
+    found_out = np.zeros(n_queries, dtype=np.int32)
+
+    ret = lib.score_3bit_weighted_batch_topk_dispatch(
+        packed.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        wb.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        bb.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        scores.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        found_out.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        ctypes.c_int(n_vectors),
+        ctypes.c_int(dim),
+        ctypes.c_int(bytes_per_vec),
+        ctypes.c_int(actual_k),
+        ctypes.c_int(n_queries),
+        ctypes.c_int(thread_count),
+    )
+
+    if ret < 0:
+        return None
+
+    results = []
+    for q in range(n_queries):
+        f = int(found_out[q])
+        offset = q * actual_k
+        results.append((indices[offset:offset + f].copy(), scores[offset:offset + f].copy()))
+    return results
 
 
 def is_available() -> bool:

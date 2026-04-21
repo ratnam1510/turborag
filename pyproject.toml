@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turborag"
-version = "0.4.2"
+version = "0.5.0"
 description = "Compressed vector and graph-augmented retrieval engine with adaptive two-stage search, implementing TurboQuant/QJL quantization from Google Research."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -20,7 +20,7 @@ from .compress import (
     quantize_qjl,
 )
 from .exceptions import DuplicateIDError, IDNotFoundError
-from .fast_kernels import build_query_lut, build_query_lut_f32, score_shard_lut, topk_shard_lut
+from .fast_kernels import build_query_lut, build_query_lut_f32, build_query_weights_f32, score_shard_lut, topk_shard_lut
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +152,21 @@ class TurboIndex:
         return self._search_exact(query, k)
 
     def _search_exact(self, query: np.ndarray, k: int) -> list[tuple[str, float]]:
-        """Exhaustive LUT scan — guaranteed perfect recall."""
+        """Exhaustive scan — guaranteed perfect recall.
+
+        Uses the weighted integer scorer for 3-bit (no LUT, direct arithmetic),
+        falling back to LUT-based scoring for other bit widths or if the C
+        kernel is unavailable.
+        """
         query_rotated = self._prepare_query(query)
+
+        # Try weighted integer scorer for 3-bit (faster, no LUT overhead)
+        if self.bits == 3:
+            result = self._search_exact_weighted(query_rotated, k)
+            if result is not None:
+                return result
+
+        # Fallback: LUT-based exact scorer
         lut = self._build_exact_query_lut(query_rotated)
 
         # Single shard fast path
@@ -166,6 +179,35 @@ class TurboIndex:
         candidates: list[tuple[str, float]] = []
         for shard in self._shards:
             shard_indices, shard_scores = topk_shard_lut(shard.vectors, lut, dim=self.dim, bits=self.bits, k=k)
+            for index, score in zip(shard_indices, shard_scores, strict=False):
+                candidates.append((shard.ids[int(index)], float(score)))
+
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        return candidates[:k]
+
+    def _search_exact_weighted(self, query_rotated: np.ndarray, k: int) -> list[tuple[str, float]] | None:
+        """Weighted integer dot product scorer for 3-bit. Returns None if unavailable."""
+        try:
+            from ._cscore_wrapper import score_3bit_weighted_topk_c
+        except ImportError:
+            return None
+
+        weights, bias = build_query_weights_f32(query_rotated, value_range=self.value_range)
+
+        if len(self._shards) == 1:
+            shard = self._shards[0]
+            result = score_3bit_weighted_topk_c(shard.vectors, weights, bias, dim=self.dim, k=k)
+            if result is None:
+                return None
+            top_indices, top_scores = result
+            return [(shard.ids[int(i)], float(score)) for i, score in zip(top_indices, top_scores, strict=False)]
+
+        candidates: list[tuple[str, float]] = []
+        for shard in self._shards:
+            result = score_3bit_weighted_topk_c(shard.vectors, weights, bias, dim=self.dim, k=k)
+            if result is None:
+                return None  # fall back to LUT for all shards
+            shard_indices, shard_scores = result
             for index, score in zip(shard_indices, shard_scores, strict=False):
                 candidates.append((shard.ids[int(index)], float(score)))
 
@@ -306,7 +348,13 @@ class TurboIndex:
         if k <= 0 or not self._shards:
             return [[] for _ in range(matrix.shape[0])]
 
-        # Prepare all queries
+        # Try batch weighted scorer for 3-bit (decodes each vector once)
+        if self.bits == 3:
+            result = self._search_batch_weighted(matrix, k)
+            if result is not None:
+                return result
+
+        # Fallback: per-query LUT scoring
         prepared = [self._prepare_query(matrix[i]) for i in range(matrix.shape[0])]
         query_luts = [self._build_exact_query_lut(q) for q in prepared]
 
@@ -340,6 +388,64 @@ class TurboIndex:
             results.append(candidates[:k])
 
         return results
+
+    def _search_batch_weighted(
+        self, queries: np.ndarray, k: int
+    ) -> list[list[tuple[str, float]]] | None:
+        """Batch scorer using vectorized query prep + native weighted batch C kernel."""
+        try:
+            from ._cscore_wrapper import score_3bit_weighted_batch_topk_c
+        except ImportError:
+            return None
+
+        n_queries = queries.shape[0]
+
+        # Vectorized query preparation (avoid per-query Python loop)
+        matrix = np.asarray(queries, dtype=np.float32)
+        if self.normalize:
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            matrix = (matrix / np.clip(norms, 1e-12, None)).astype(np.float32)
+        rotated = (matrix @ self._rotation_t).astype(np.float32)
+
+        # Build all weights + biases
+        scale = np.float32(2.0 * self.value_range / 7.0)
+        all_weights = np.ascontiguousarray(rotated * scale, dtype=np.float32)
+        all_biases = np.ascontiguousarray(-self.value_range * rotated.sum(axis=1), dtype=np.float32)
+
+        if len(self._shards) == 1:
+            shard = self._shards[0]
+            shard_results = score_3bit_weighted_batch_topk_c(
+                shard.vectors,
+                all_weights,
+                all_biases,
+                dim=self.dim,
+                k=k,
+            )
+            if shard_results is None:
+                return None
+            return [
+                [(shard.ids[int(idx)], float(score)) for idx, score in zip(indices, scores, strict=False)]
+                for indices, scores in shard_results
+            ]
+
+        all_candidates: list[list[tuple[str, float]]] = [[] for _ in range(n_queries)]
+        for shard in self._shards:
+            shard_results = score_3bit_weighted_batch_topk_c(
+                shard.vectors,
+                all_weights,
+                all_biases,
+                dim=self.dim,
+                k=k,
+            )
+            if shard_results is None:
+                return None
+            for qi, (indices, scores) in enumerate(shard_results):
+                all_candidates[qi].extend(
+                    (shard.ids[int(idx)], float(score))
+                    for idx, score in zip(indices, scores, strict=False)
+                )
+
+        return [sorted(candidates, key=lambda item: item[1], reverse=True)[:k] for candidates in all_candidates]
 
     def _prepare_query(self, query: np.ndarray) -> np.ndarray:
         """Validate, normalize, and rotate a single query vector. Returns float32."""

@@ -140,7 +140,7 @@ TurboRAG supports three search modes selected via `mode`: `auto` (default), `exa
 3. Rotate it with the stored orthogonal matrix.
 4. Quantize and bit-pack it using the configured bit width.
 5. **Mode selection**:
-   - `exact`: Score every vector with the LUT-based C scoring kernel with fused byte-triplet acceleration.
+   - `exact`: Weighted integer scorer — direct arithmetic on packed 3-bit levels, no LUT overhead. Auto-vectorizes across architectures (SSE/AVX, NEON) via compiler optimizations.
    - `fast`: Compute a binary SimHash sketch of the query, use POPCNT Hamming distance against per-shard `.sketch.bin` files to pre-filter candidates, then refine only the top candidates with the full LUT scorer.
    - `auto`: Select `exact` for small indexes and `fast` for large ones based on index size.
 6. Merge top candidates across shards.

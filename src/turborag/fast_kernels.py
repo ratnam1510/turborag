@@ -71,6 +71,26 @@ def build_query_lut_f32(
     return q[:, np.newaxis] * dequant_values[np.newaxis, :]
 
 
+def build_query_weights_f32(
+    query_rotated: FloatArray,
+    value_range: float = 1.0,
+) -> tuple[FloatArray, float]:
+    """Build per-dimension weights for direct 3-bit integer scoring.
+
+    Since the quantizer is affine-uniform (dequant(l) = (2R/7)*l - R),
+    the LUT is unnecessary for 3-bit. Exact scoring becomes:
+        score = sum(weight[d] * level[d]) + bias
+    where weight[d] = (2*R/7)*q[d] and bias = -R*sum(q).
+
+    Returns (weights, bias) where weights is float32 of shape (dim,).
+    """
+    q = np.asarray(query_rotated, dtype=np.float32).ravel()
+    scale = (2.0 * value_range) / 7.0
+    weights = (q * scale).astype(np.float32)
+    bias = float(-value_range * np.sum(q))
+    return weights, bias
+
+
 # ---------------------------------------------------------------------------
 # Scoring — single query
 # ---------------------------------------------------------------------------
@@ -164,10 +184,10 @@ def _topk_shard_lut_3bit_native(
     try:
         from ._cscore_wrapper import (
             build_fused_lut_c,
-            build_fused_lut_12bit_f32_c,
+            build_fused_lut_6bit_f32_c,
             build_fused_lut_f32_c,
             score_fused_3bit_topk_c,
-            score_fused_3bit_topk_12bit_f32_c,
+            score_fused_3bit_topk_6bit_f32_c,
             score_fused_3bit_topk_f32_c,
         )
     except ImportError:
@@ -175,11 +195,11 @@ def _topk_shard_lut_3bit_native(
 
     lut32 = lut if lut.dtype == np.float32 else lut.astype(np.float32, copy=False)
 
-    fused12_f32 = build_fused_lut_12bit_f32_c(lut32, dim)
-    if fused12_f32 is not None:
-        topk_12bit = score_fused_3bit_topk_12bit_f32_c(packed, fused12_f32, dim, k)
-        if topk_12bit is not None:
-            return topk_12bit
+    fused6_f32 = build_fused_lut_6bit_f32_c(lut32, dim)
+    if fused6_f32 is not None:
+        topk_6bit = score_fused_3bit_topk_6bit_f32_c(packed, fused6_f32, dim, k)
+        if topk_6bit is not None:
+            return topk_6bit
 
     fused3_f32 = build_fused_lut_f32_c(lut32, dim, 3)
     if fused3_f32 is not None:

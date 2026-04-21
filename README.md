@@ -16,26 +16,24 @@ TurboRAG is a production-grade compressed vector retrieval engine with graph-aug
 
 ### Large Scale (100K vectors, 384-dim, 200 queries, k=10, 3-bit)
 
-Latest local reproducible runs on `arm64` as of 2026-04-12. Exact mode now uses the native threaded 3-bit top-k path with a 12-bit half-group fused scorer by default.
+Latest local reproducible runs as of 2026-04-20. Exact mode uses the weighted integer scorer — a LUT-free arithmetic kernel that exploits the affine-uniform quantizer to score packed 3-bit vectors with direct `weight × level` dot products instead of table lookups. Machine-agnostic: auto-vectorizes to SSE/AVX on x86 and NEON on ARM via `-O3 -march=native`.
 
-| Backend | Recall@10 | MRR | QPS | Memory | Notes |
+| Backend | Recall@10 | QPS (single) | QPS (batch) | Memory | Notes |
 |---|---|---|---|---|---|
-| **TurboRAG exact** | **1.000** | **1.000** | **66** | **18.3 MB** | Full side-by-side FAISS matrix run |
-| **TurboRAG fast** | **0.975** | **0.975** | **131** | **18.3 MB** | Binary sketch head + LUT refine |
-| Exact float32 | 1.000 | 1.000 | 73 | 146.5 MB | Brute force |
-| FAISS Flat | 1.000 | 1.000 | 60 | 146.5 MB | Brute force |
-| FAISS HNSW | 0.610 | 0.610 | 771 | 152.6 MB | High throughput, recall drop |
-
-Exact-only benchmark note: repeated TurboRAG exact-only runs on the same fixture now median at **70.98 QPS** in the main benchmark environment.
+| **TurboRAG exact** | **1.000** | **171** | **114** | **19.2 MB** | Weighted integer scorer, 8 threads |
+| **TurboRAG fast** | **0.965** | **158** | — | **19.2 MB** | Binary sketch head + LUT refine |
+| Exact float32 | 1.000 | 64 | — | 153.6 MB | NumPy brute force |
+| FAISS Flat | 1.000 | 80 | — | 146.5 MB | Brute force |
+| FAISS HNSW | 0.575 | 1,737 | — | 152.6 MB | High throughput, recall drop |
 
 TurboRAG `auto` mode selects the best strategy per query: `exact` for small indexes, `fast` for large ones.
 Exact mode uses the native C scorer and defaults to up to `8` threads. Override with `TURBORAG_EXACT_THREADS=<n>` when benchmarking.
 
 **Key advantages:**
-- **8× memory compression** — 18.3 MB vs 146.5 MB float32 at 100K scale, with perfect recall in exact mode
-- **Adaptive two-stage search** — binary sketch pre-filter (SimHash + POPCNT) with full LUT refine gives about 2× throughput over current exact on the 100K fixture while holding 97.5% recall
+- **8× memory compression** — 19.2 MB vs 153.6 MB float32 at 100K scale, with perfect recall in exact mode
+- **171 QPS exact at 100% recall** — the weighted integer scorer now beats the local float32 and FAISS Flat baselines on the latest reproducible 100K rerun
 - **Guaranteed exact mode** — `mode="exact"` always gives perfect recall when accuracy is non-negotiable
-- **Memory-first exact retrieval** — exact mode keeps perfect recall at 18.3 MB instead of a 146.5 MB float32 matrix
+- **Machine-agnostic** — no platform-specific intrinsics; compiler auto-vectorization works on x86, ARM, and any architecture with `-O3 -march=native`
 - Production-hardened with atomic persistence, concurrency-safe HTTP service, and input validation
 
 ## What Ships Today
