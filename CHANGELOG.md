@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1 - 2026-04-28
+
+### New Features
+
+- Added metadata filter support to `TurboIndex.search(...)`, `search_batch(...)`, and the HTTP service query payload.
+- Added a first-party Rust client crate for the TurboRAG HTTP API under `clients/rust`.
+
+### Bug Fixes
+
+- Persisted record metadata during sidecar builds and service ingest so filters work after save/load and through the HTTP service.
+- Forwarded service-side `filters` through hydrated query flows instead of only the unhydrated path.
+
 ## 0.5.0 - 2026-04-20
 
 ### Performance

@@ -6,7 +6,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -21,6 +21,7 @@ from .compress import (
 )
 from .exceptions import DuplicateIDError, IDNotFoundError
 from .fast_kernels import build_query_lut, build_query_lut_f32, build_query_weights_f32, score_shard_lut, topk_shard_lut
+from .filters import match_mask, validate_filters
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class _Shard:
     ids: list[str]
     vectors: Uint8Array
     sketches: Uint8Array | None = None
+    metadata: list[dict[str, Any] | None] | None = None
     path: Path | None = None
 
     def __len__(self) -> int:
@@ -83,12 +85,19 @@ class TurboIndex:
             self.storage_dir.mkdir(parents=True, exist_ok=True)
             (self.storage_dir / "shards").mkdir(parents=True, exist_ok=True)
 
-    def add(self, vectors: np.ndarray, ids: Sequence[str]) -> None:
+    def add(
+        self,
+        vectors: np.ndarray,
+        ids: Sequence[str],
+        metadata: Sequence[dict[str, Any]] | None = None,
+    ) -> None:
         matrix = np.asarray(vectors, dtype=np.float32)
         if matrix.ndim != 2 or matrix.shape[1] != self.dim:
             raise ValueError(f"vectors must have shape (N, {self.dim})")
         if matrix.shape[0] != len(ids):
             raise ValueError("vectors and ids must have the same length")
+        if metadata is not None and len(metadata) != len(ids):
+            raise ValueError("metadata and ids must have the same length")
         if len(set(ids)) != len(ids):
             raise ValueError("ids must be unique within a batch")
         duplicates = set(ids) & self._ids
@@ -107,7 +116,8 @@ class TurboIndex:
             sketch = np.packbits((rotated >= 0).astype(np.uint8), axis=1)
             # Trim to exact sketch_bytes (packbits may pad)
             sketch = sketch[:, :self._sketch_bytes]
-            self._append_shard(packed, list(ids[offset:end]), sketch)
+            shard_meta = list(metadata[offset:end]) if metadata is not None else None
+            self._append_shard(packed, list(ids[offset:end]), sketch, shard_meta)
             offset = end
 
         self._ids.update(ids)
@@ -122,6 +132,7 @@ class TurboIndex:
         k: int = 10,
         *,
         mode: str = "auto",
+        filters: dict[str, Any] | None = None,
     ) -> list[tuple[str, float]]:
         """Search the index for the k nearest vectors.
 
@@ -135,11 +146,17 @@ class TurboIndex:
             ``"exact"`` — exhaustive LUT scan (guaranteed perfect recall).
             ``"fast"`` — binary sketch pre-filter + LUT refine
             (near-perfect recall, much faster on large indexes).
+        filters : optional metadata filter (MongoDB-style operators).
+            Only vectors whose metadata matches all conditions are considered.
         """
         if k <= 0:
             return []
         if not self._shards:
             return []
+
+        if filters is not None:
+            validate_filters(filters)
+            return self._search_filtered(query, k, filters)
 
         if mode == "auto":
             if self._has_sketches and self._size > self._SKETCH_THRESHOLD:
@@ -210,6 +227,45 @@ class TurboIndex:
             shard_indices, shard_scores = result
             for index, score in zip(shard_indices, shard_scores, strict=False):
                 candidates.append((shard.ids[int(index)], float(score)))
+
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        return candidates[:k]
+
+    def _search_filtered(
+        self, query: np.ndarray, k: int, filters: dict[str, Any]
+    ) -> list[tuple[str, float]]:
+        """Pre-filter by metadata, then exact-score the matching subset."""
+        query_rotated = self._prepare_query(query)
+        lut = self._build_exact_query_lut(query_rotated)
+
+        candidates: list[tuple[str, float]] = []
+        for shard in self._shards:
+            if shard.metadata is None:
+                continue  # no metadata on this shard — skip
+
+            mask = match_mask(shard.metadata, filters)
+            n_match = int(mask.sum())
+            if n_match == 0:
+                continue
+
+            matching_idx = np.flatnonzero(mask)
+
+            if n_match == len(shard):
+                # All match — score full shard (no gather overhead)
+                top_indices, top_scores = topk_shard_lut(
+                    shard.vectors, lut, dim=self.dim, bits=self.bits, k=k,
+                )
+                for i, score in zip(top_indices, top_scores, strict=False):
+                    candidates.append((shard.ids[int(i)], float(score)))
+            else:
+                # Gather matching vectors into contiguous array
+                subset = np.ascontiguousarray(shard.vectors[matching_idx], dtype=np.uint8)
+                top_indices, top_scores = topk_shard_lut(
+                    subset, lut, dim=self.dim, bits=self.bits, k=min(k, n_match),
+                )
+                for i, score in zip(top_indices, top_scores, strict=False):
+                    original_idx = int(matching_idx[int(i)])
+                    candidates.append((shard.ids[original_idx], float(score)))
 
         candidates.sort(key=lambda item: item[1], reverse=True)
         return candidates[:k]
@@ -332,6 +388,7 @@ class TurboIndex:
         queries: np.ndarray,
         k: int = 10,
         max_workers: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[list[tuple[str, float]]]:
         """Search for multiple queries at once.
 
@@ -341,12 +398,18 @@ class TurboIndex:
         k : number of results per query
         max_workers : thread-pool size for parallel shard scanning.
             *None* uses a simple sequential loop.
+        filters : optional metadata filter applied to every query.
         """
         matrix = np.asarray(queries, dtype=np.float32)
         if matrix.ndim != 2 or matrix.shape[1] != self.dim:
             raise ValueError(f"queries must have shape (N, {self.dim})")
         if k <= 0 or not self._shards:
             return [[] for _ in range(matrix.shape[0])]
+
+        # Filtered batch: run per-query filtered search
+        if filters is not None:
+            validate_filters(filters)
+            return [self._search_filtered(matrix[i], k, filters) for i in range(matrix.shape[0])]
 
         # Try batch weighted scorer for 3-bit (decodes each vector once)
         if self.bits == 3:
@@ -499,6 +562,9 @@ class TurboIndex:
             if shard.sketches is not None:
                 sketch_path = shards_dir / f"shard_{shard_index:03d}.sketch.bin"
                 np.asarray(shard.sketches, dtype=np.uint8).tofile(sketch_path)
+            if shard.metadata is not None:
+                meta_path = shards_dir / f"shard_{shard_index:03d}.meta.json"
+                meta_path.write_text(json.dumps(shard.metadata), encoding="utf-8")
 
     def load(self, path: str) -> None:
         index_dir = Path(path)
@@ -531,7 +597,11 @@ class TurboIndex:
             if sketch_path.exists():
                 sketch_shape = (len(ids), self._sketch_bytes)
                 shard_sketches = np.memmap(sketch_path, dtype=np.uint8, mode="r", shape=sketch_shape)
-            self._shards.append(_Shard(ids=ids, vectors=vectors, sketches=shard_sketches, path=shard_path))
+            meta_path = shards_dir / f"{shard_stem}.meta.json"
+            shard_metadata = None
+            if meta_path.exists():
+                shard_metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            self._shards.append(_Shard(ids=ids, vectors=vectors, sketches=shard_sketches, metadata=shard_metadata, path=shard_path))
             self._ids.update(ids)
             self._size += len(ids)
 
@@ -590,7 +660,8 @@ class TurboIndex:
                 new_ids = [shard.ids[i] for i in keep_mask]
                 new_vectors = np.asarray(shard.vectors, dtype=np.uint8)[keep_mask]
                 new_sketches = np.asarray(shard.sketches, dtype=np.uint8)[keep_mask].copy() if shard.sketches is not None else None
-                new_shards.append(_Shard(ids=new_ids, vectors=new_vectors.copy(), sketches=new_sketches))
+                new_metadata = [shard.metadata[i] for i in keep_mask] if shard.metadata is not None else None
+                new_shards.append(_Shard(ids=new_ids, vectors=new_vectors.copy(), sketches=new_sketches, metadata=new_metadata))
 
         self._shards = new_shards
         self._ids -= to_delete
@@ -599,7 +670,12 @@ class TurboIndex:
         logger.debug("Deleted %d vectors from index", removed)
         return removed
 
-    def update(self, vectors: np.ndarray, ids: Sequence[str]) -> None:
+    def update(
+        self,
+        vectors: np.ndarray,
+        ids: Sequence[str],
+        metadata: Sequence[dict[str, Any]] | None = None,
+    ) -> None:
         """Update existing vectors by ID. Equivalent to delete + add.
 
         All IDs must already exist in the index.
@@ -608,17 +684,29 @@ class TurboIndex:
         ----------
         vectors : array of shape ``(N, dim)``
         ids : sequence of N chunk IDs to update
+        metadata : optional per-vector metadata dicts
         """
         for chunk_id in ids:
             if chunk_id not in self._ids:
                 raise IDNotFoundError(chunk_id)
 
         self.delete(ids)
-        self.add(vectors, ids)
+        self.add(vectors, ids, metadata=metadata)
 
-    def _append_shard(self, packed_vectors: Uint8Array, ids: list[str], sketches: Uint8Array | None = None) -> None:
+    def _append_shard(
+        self,
+        packed_vectors: Uint8Array,
+        ids: list[str],
+        sketches: Uint8Array | None = None,
+        metadata: list[dict[str, Any] | None] | None = None,
+    ) -> None:
         if self.storage_dir is None:
-            self._shards.append(_Shard(ids=ids, vectors=np.array(packed_vectors, copy=True), sketches=np.array(sketches, copy=True) if sketches is not None else None))
+            self._shards.append(_Shard(
+                ids=ids,
+                vectors=np.array(packed_vectors, copy=True),
+                sketches=np.array(sketches, copy=True) if sketches is not None else None,
+                metadata=metadata,
+            ))
             return
 
         shard_index = len(self._shards)
@@ -636,4 +724,8 @@ class TurboIndex:
             sketches_arr.tofile(sketch_path)
             shard_sketches = np.memmap(sketch_path, dtype=np.uint8, mode="r", shape=sketches_arr.shape)
 
-        self._shards.append(_Shard(ids=ids, vectors=memmap, sketches=shard_sketches, path=shard_path))
+        if metadata is not None:
+            meta_path = self.storage_dir / "shards" / f"shard_{shard_index:03d}.meta.json"
+            meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        self._shards.append(_Shard(ids=ids, vectors=memmap, sketches=shard_sketches, metadata=metadata, path=shard_path))

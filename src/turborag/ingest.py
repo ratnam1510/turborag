@@ -138,7 +138,11 @@ def build_sidecar_index(
         normalize=normalize,
         value_range=value_range,
     )
-    index.add(dataset.embeddings, dataset.ids)
+    index.add(
+        dataset.embeddings,
+        dataset.ids,
+        metadata=[dict(record.metadata) for record in dataset.records],
+    )
     index.save(str(target))
 
     records_path: Path | None = None

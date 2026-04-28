@@ -108,34 +108,47 @@ class ExistingRAGAdapter:
         )
 
     def add_embeddings(
-        self, embeddings: Sequence[Sequence[float]] | FloatVector, ids: Sequence[str]
+        self,
+        embeddings: Sequence[Sequence[float]] | FloatVector,
+        ids: Sequence[str],
+        metadata: Sequence[dict[str, Any]] | None = None,
     ) -> None:
         matrix = np.asarray(embeddings, dtype=np.float32)
         if matrix.ndim != 2:
             raise ValueError("embeddings must be a 2D array-like object")
-        self.index.add(matrix, ids)
+        self.index.add(matrix, ids, metadata=metadata)
 
-    def search_ids(self, query: str, k: int = 10) -> list[SearchHit]:
+    def search_ids(
+        self, query: str, k: int = 10, filters: dict[str, Any] | None = None
+    ) -> list[SearchHit]:
         vector = _embed_query(self.query_embedder, query)
-        return self.search_ids_by_vector(vector, k=k)
+        return self.search_ids_by_vector(vector, k=k, filters=filters)
 
     def search_ids_by_vector(
-        self, vector: Sequence[float] | FloatVector, k: int = 10
+        self,
+        vector: Sequence[float] | FloatVector,
+        k: int = 10,
+        filters: dict[str, Any] | None = None,
     ) -> list[SearchHit]:
         query = _as_vector(vector)
         return [
             SearchHit(chunk_id=chunk_id, score=score)
-            for chunk_id, score in self.index.search(query, k=k)
+            for chunk_id, score in self.index.search(query, k=k, filters=filters)
         ]
 
-    def query(self, text: str, k: int = 10) -> list[RetrievalResult]:
-        hits = self.search_ids(text, k=k)
+    def query(
+        self, text: str, k: int = 10, filters: dict[str, Any] | None = None
+    ) -> list[RetrievalResult]:
+        hits = self.search_ids(text, k=k, filters=filters)
         return self._hydrate_hits(hits)
 
     def query_by_vector(
-        self, vector: Sequence[float] | FloatVector, k: int = 10
+        self,
+        vector: Sequence[float] | FloatVector,
+        k: int = 10,
+        filters: dict[str, Any] | None = None,
     ) -> list[RetrievalResult]:
-        hits = self.search_ids_by_vector(vector, k=k)
+        hits = self.search_ids_by_vector(vector, k=k, filters=filters)
         return self._hydrate_hits(hits)
 
     def similarity_search(self, query: str, k: int = 4) -> list[ChunkRecord]:

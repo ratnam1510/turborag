@@ -1,6 +1,6 @@
 # TurboRAG Client SDKs
 
-Language-agnostic clients for the TurboRAG HTTP API. Each is a thin typed wrapper with zero external dependencies.
+Language-agnostic clients for the TurboRAG HTTP API. Each is a thin typed wrapper over the same sidecar service contract.
 
 | Language | Package | Install |
 |---|---|---|
@@ -8,6 +8,7 @@ Language-agnostic clients for the TurboRAG HTTP API. Each is a thin typed wrappe
 | **TypeScript/Node.js** | `turborag` | `npm install turborag` |
 | **Go** | `github.com/ratnam1510/turborag/clients/go` | `go get github.com/ratnam1510/turborag/clients/go` |
 | **Ruby** | `turborag` | `gem install turborag` |
+| **Rust** | `turborag` | `cargo add turborag` |
 
 All clients talk to the same HTTP API — start a server with:
 
@@ -39,5 +40,5 @@ Each client is ~100 lines wrapping `POST`/`GET` with JSON serialization. To add 
 
 1. Create `clients/<language>/`
 2. Implement the 7 API methods above
-3. Use native HTTP — no external dependencies
+3. Keep dependencies minimal and use the HTTP sidecar contract
 4. Match the type signatures from the TypeScript client

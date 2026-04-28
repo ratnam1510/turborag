@@ -47,7 +47,7 @@ Exact mode uses the native C scorer and defaults to up to `8` threads. Override 
 - **MCP server**: Tool-based agent integration over stdio (query, describe, ingest)
 - **Benchmark suite**: Side-by-side comparison against exact float and FAISS backends
 - **CLI**: Full command-line interface for import, query, benchmark, serve, and MCP modes
-- **Client SDKs**: TypeScript/Node.js, Go, and Ruby clients for language-agnostic HTTP integration
+- **Client SDKs**: TypeScript/Node.js, Go, Ruby, and Rust clients for language-agnostic HTTP integration
 - **Docker**: Production-ready multi-stage Dockerfile with pre-compiled C kernel
 
 ## Package Layout
@@ -273,7 +273,7 @@ pytest
 - [Import Existing Data](docs/import-existing.md)
 - [LLM Request Model](docs/llm-request-model.md)
 - [Service API](docs/service.md)
-- [Client SDKs](clients/) (TypeScript, Go, Ruby)
+- [Client SDKs](clients/) (TypeScript, Go, Ruby, Rust)
 - [Spec Status](docs/spec-status.md)
 - [Spec Decisions](docs/spec-decisions.md)
 - [Change Log](CHANGELOG.md)

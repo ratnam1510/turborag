@@ -15,6 +15,10 @@ build/
 *.dylib
 *.dll
 
+# Rust / Ruby build output
+clients/rust/target/
+clients/ruby/*.gem
+
 # Website / Node
 node_modules/
 website/dist/

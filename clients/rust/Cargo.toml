@@ -1,0 +1,16 @@
+[package]
+name = "turborag"
+version = "0.5.1"
+edition = "2021"
+license = "MIT"
+description = "Rust client for the TurboRAG compressed vector retrieval HTTP API"
+repository = "https://github.com/ratnam1510/turborag"
+homepage = "https://github.com/ratnam1510/turborag"
+documentation = "https://github.com/ratnam1510/turborag/tree/main/clients/rust"
+keywords = ["rag", "retrieval", "vector-search", "embeddings", "http-client"]
+categories = ["api-bindings"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -222,6 +222,87 @@ def test_query_allows_unhydrated_id_only_response(tmp_path):
     assert payload["results"][0]["text"] == ""
 
 
+def test_query_filters_work_with_hydrated_results(tmp_path):
+    dataset_path = tmp_path / "dataset.jsonl"
+    rows = [
+        {
+            "chunk_id": "a",
+            "text": "apple finance",
+            "embedding": [2.0, 0.0, 1.0],
+            "metadata": {"topic": "finance"},
+        },
+        {
+            "chunk_id": "b",
+            "text": "banana inventory",
+            "embedding": [0.0, 2.0, 0.0],
+            "metadata": {"topic": "inventory"},
+        },
+        {
+            "chunk_id": "c",
+            "text": "finance banana",
+            "embedding": [0.0, 1.0, 1.0],
+            "metadata": {"topic": "finance"},
+        },
+    ]
+    dataset_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    dataset = load_dataset(dataset_path)
+    build_sidecar_index(dataset, tmp_path / "index", bits=4)
+
+    client = TestClient(create_app(tmp_path / "index"))
+    response = client.post(
+        "/query",
+        json={
+            "query_vector": [2.0, 0.0, 1.0],
+            "top_k": 2,
+            "filters": {"topic": "finance"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["chunk_id"] for item in payload["results"]] == ["a", "c"]
+
+
+def test_ingest_records_persists_metadata_for_filters(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    ingest_response = client.post(
+        "/ingest",
+        json={
+            "records": [
+                {
+                    "chunk_id": "d",
+                    "text": "durian finance",
+                    "embedding": [3.0, 0.0, 1.0],
+                    "metadata": {"topic": "finance"},
+                },
+                {
+                    "chunk_id": "e",
+                    "text": "elderberry legal",
+                    "embedding": [0.0, 3.0, 0.0],
+                    "metadata": {"topic": "legal"},
+                },
+            ]
+        },
+    )
+    assert ingest_response.status_code == 200
+
+    response = client.post(
+        "/query",
+        json={
+            "query_vector": [3.0, 0.0, 1.0],
+            "top_k": 2,
+            "hydrate": False,
+            "filters": {"topic": "finance"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["chunk_id"] for item in payload["results"]] == ["d"]
+
+
 def test_service_uses_external_records_backend(tmp_path):
     _build_index(tmp_path)
 

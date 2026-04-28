@@ -184,7 +184,7 @@ class TurboService:
         }
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
-        query_text, query_vector, top_k, hydrate = _validate_query_payload(payload)
+        query_text, query_vector, top_k, hydrate, filters = _validate_query_payload(payload)
 
         if not hydrate:
             if query_text is not None:
@@ -192,7 +192,7 @@ class TurboService:
             else:
                 vector = np.asarray(query_vector, dtype=np.float32)
 
-            hits = self.index.search(vector, k=top_k)
+            hits = self.index.search(vector, k=top_k, filters=filters)
             return {
                 "count": len(hits),
                 "results": [
@@ -209,10 +209,10 @@ class TurboService:
         )
 
         if query_text is not None:
-            results = adapter.query(query_text, k=top_k)
+            results = adapter.query(query_text, k=top_k, filters=filters)
         else:
             vector = np.asarray(query_vector, dtype=np.float32)
-            results = adapter.query_by_vector(vector, k=top_k)
+            results = adapter.query_by_vector(vector, k=top_k, filters=filters)
 
         return {
             "count": len(results),
@@ -291,7 +291,11 @@ class TurboService:
 
     def ingest_records(self, payload: dict[str, Any]) -> dict[str, Any]:
         records, embeddings = _validate_ingest_payload(payload)
-        self.index.add(embeddings, [record.chunk_id for record in records])
+        self.index.add(
+            embeddings,
+            [record.chunk_id for record in records],
+            metadata=[dict(record.metadata) for record in records],
+        )
         _write_index_config(self.index, self.index_path)
 
         for record in records:
@@ -334,7 +338,11 @@ class TurboService:
         )
         ids = [c.chunk_id for c in chunks]
 
-        self.index.add(embeddings, ids)
+        self.index.add(
+            embeddings,
+            ids,
+            metadata=[dict(chunk.metadata) for chunk in chunks],
+        )
         _write_index_config(self.index, self.index_path)
 
         for c in chunks:
@@ -592,11 +600,11 @@ def _serialize_unhydrated_result(chunk_id: str, score: float) -> dict[str, Any]:
 
 def _validate_query_payload(
     payload: dict[str, Any],
-) -> tuple[str | None, list[float] | None, int, bool]:
+) -> tuple[str | None, list[float] | None, int, bool, dict[str, Any] | None]:
     if not isinstance(payload, dict):
         raise ValueError("Query payload must be a JSON object.")
 
-    allowed_keys = {"query_text", "query_vector", "top_k", "hydrate"}
+    allowed_keys = {"query_text", "query_vector", "top_k", "hydrate", "filters"}
     unknown = sorted(set(payload) - allowed_keys)
     if unknown:
         raise ValueError(f"Unknown query fields: {', '.join(unknown)}")
@@ -605,6 +613,7 @@ def _validate_query_payload(
     query_vector = payload.get("query_vector")
     top_k = int(payload.get("top_k", 5))
     hydrate = payload.get("hydrate", True)
+    filters = payload.get("filters")
 
     if not isinstance(hydrate, bool):
         raise ValueError("hydrate must be a boolean.")
@@ -625,7 +634,10 @@ def _validate_query_payload(
     else:
         query_vector = None
 
-    return (query_text if has_text else None, query_vector, top_k, hydrate)
+    if filters is not None and not isinstance(filters, dict):
+        raise ValueError("filters must be a JSON object.")
+
+    return (query_text if has_text else None, query_vector, top_k, hydrate, filters)
 
 
 def _embed_service_query(query_embedder: Any | None, text: str) -> np.ndarray:
