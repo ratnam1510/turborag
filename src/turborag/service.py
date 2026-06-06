@@ -5,7 +5,9 @@ import logging
 import threading
 import time
 import uuid
+import os
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -30,6 +32,10 @@ from .index import TurboIndex
 from .types import ChunkRecord, RetrievalResult
 
 logger = logging.getLogger("turborag.service")
+
+# Request limits to bound memory / prevent DoS via oversized payloads.
+MAX_BATCH_QUERIES = 256
+MAX_INGEST_RECORDS = 10_000
 
 # ---------------------------------------------------------------------------
 #  Metrics collector (lightweight, no external deps)
@@ -64,27 +70,77 @@ class _LatencyBucket:
 
 @dataclass
 class Metrics:
-    """Lightweight in-process metrics collector."""
+    """Lightweight in-process metrics collector (thread-safe)."""
 
     _buckets: dict[str, _LatencyBucket] = field(default_factory=dict)
     _error_count: int = 0
     _start_time: float = field(default_factory=time.monotonic)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record_latency(self, endpoint: str, ms: float) -> None:
-        if endpoint not in self._buckets:
-            self._buckets[endpoint] = _LatencyBucket()
-        self._buckets[endpoint].record(ms)
+        with self._lock:
+            if endpoint not in self._buckets:
+                self._buckets[endpoint] = _LatencyBucket()
+            self._buckets[endpoint].record(ms)
 
     def record_error(self) -> None:
-        self._error_count += 1
+        with self._lock:
+            self._error_count += 1
 
     def snapshot(self) -> dict[str, Any]:
-        uptime = time.monotonic() - self._start_time
-        return {
-            "uptime_seconds": round(uptime, 1),
-            "errors": self._error_count,
-            "endpoints": {k: v.as_dict() for k, v in self._buckets.items()},
-        }
+        with self._lock:
+            uptime = time.monotonic() - self._start_time
+            return {
+                "uptime_seconds": round(uptime, 1),
+                "errors": self._error_count,
+                "endpoints": {k: v.as_dict() for k, v in self._buckets.items()},
+            }
+
+
+class _RWLock:
+    """Writer-preferring readers-writer lock.
+
+    Permits many concurrent readers (searches) but grants a writer
+    (ingest/mutation) exclusive access. Newly-arriving readers yield to a
+    waiting writer, preventing writer starvation under continuous reads.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writers_waiting = 0
+        self._writer_active = False
+
+    @contextmanager
+    def read_locked(self):
+        with self._cond:
+            while self._writer_active or self._writers_waiting > 0:
+                self._cond.wait()
+            self._readers += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._cond.notify_all()
+
+    @contextmanager
+    def write_locked(self):
+        with self._cond:
+            self._writers_waiting += 1
+            try:
+                while self._writer_active or self._readers > 0:
+                    self._cond.wait()
+            finally:
+                self._writers_waiting -= 1
+            self._writer_active = True
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writer_active = False
+                self._cond.notify_all()
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +242,11 @@ class TurboService:
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         query_text, query_vector, top_k, hydrate, filters = _validate_query_payload(payload)
 
+        if query_vector is not None and len(query_vector) != self.index.dim:
+            raise ValueError(
+                f"query_vector dim {len(query_vector)} != index dim {self.index.dim}"
+            )
+
         if not hydrate:
             if query_text is not None:
                 vector = _embed_service_query(self.query_embedder, query_text)
@@ -228,6 +289,8 @@ class TurboService:
         queries = payload.get("queries")
         if not isinstance(queries, list) or not queries:
             raise ValueError("queries must be a non-empty list")
+        if len(queries) > MAX_BATCH_QUERIES:
+            raise ValueError(f"queries exceeds maximum of {MAX_BATCH_QUERIES}")
 
         top_k = int(payload.get("top_k", 5))
         if top_k <= 0 or top_k > 1000:
@@ -240,6 +303,10 @@ class TurboService:
             qv = q.get("query_vector")
             if not isinstance(qv, list) or not qv:
                 raise ValueError(f"Query {i + 1} requires a non-empty query_vector")
+            if len(qv) != self.index.dim:
+                raise ValueError(
+                    f"Query {i + 1} vector dim {len(qv)} != index dim {self.index.dim}"
+                )
             vectors.append([float(v) for v in qv])
 
         query_matrix = np.asarray(vectors, dtype=np.float32)
@@ -418,7 +485,7 @@ def create_app(
         allow_unhydrated=allow_unhydrated,
     )
     metrics = Metrics()
-    _write_lock = threading.Lock()
+    rwlock = _RWLock()
 
     # --- Helpers ---
 
@@ -437,11 +504,13 @@ def create_app(
         return JSONResponse(service.describe())
 
     async def health(request: Request) -> JSONResponse:
+        with rwlock.read_locked():
+            index_size = len(service.index)
         return JSONResponse(
             {
                 "status": "ok",
                 "index_path": str(service.index_path),
-                "index_size": len(service.index),
+                "index_size": index_size,
             }
         )
 
@@ -455,7 +524,8 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            result = service.query(payload)
+            with rwlock.read_locked():
+                result = service.query(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/query", elapsed)
             logger.info(
@@ -477,7 +547,8 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            result = service.query_batch(payload)
+            with rwlock.read_locked():
+                result = service.query_batch(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/query/batch", elapsed)
             logger.info(
@@ -498,7 +569,7 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            with _write_lock:
+            with rwlock.write_locked():
                 result = service.ingest_records(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest", elapsed)
@@ -517,7 +588,7 @@ def create_app(
             payload = await _json_or_400(request)
             if payload is None:
                 return JSONResponse({"detail": "Invalid JSON body"}, status_code=400)
-            with _write_lock:
+            with rwlock.write_locked():
                 result = service.ingest_text(payload)
             elapsed = (time.monotonic() - start) * 1000
             metrics.record_latency("/ingest-text", elapsed)
@@ -679,6 +750,8 @@ def _validate_ingest_payload(
     raw_records = payload.get("records")
     if not isinstance(raw_records, list) or not raw_records:
         raise ValueError("At least one record is required.")
+    if len(raw_records) > MAX_INGEST_RECORDS:
+        raise ValueError(f"records exceeds maximum of {MAX_INGEST_RECORDS}")
 
     records: list[ChunkRecord] = []
     embeddings: list[list[float]] = []
@@ -746,6 +819,7 @@ def _write_index_config(index: TurboIndex, index_path: Path) -> None:
         "schema_version": 1,
         "size": len(index),
     }
-    (index_path / "config.json").write_text(
-        json.dumps(config, indent=2), encoding="utf-8"
-    )
+    target = index_path / "config.json"
+    tmp = index_path / "config.json.tmp"
+    tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    os.replace(tmp, target)

@@ -1339,7 +1339,9 @@ static inline float score_row_3bit_weighted_fullgroups(
     /*
      * Decode all 3-bit levels into a float buffer, then dot with weights.
      * The separation allows the compiler to auto-vectorize the dot product
-     * (SSE/AVX on x86, NEON on ARM) via -O3 -march=native.
+     * (SSE/AVX on x86, NEON on ARM). Reassociation flags (-fassociative-math,
+     * -ffp-contract=fast) let it use several parallel accumulators instead of
+     * one serial chain; see _cscore_wrapper.py for the flag set.
      */
     float levels[8];
     float total = 0.0f;
@@ -1367,6 +1369,35 @@ static inline float score_row_3bit_weighted_fullgroups(
     return total;
 }
 
+/* Score one packed 3-bit vector against per-dimension weights. Handles both
+ * the byte-aligned fast path and the general (dim % 8 != 0) bit-walk. Shared
+ * by the contiguous-range and work-stealing scorers so they stay identical. */
+static inline float score_row_3bit_weighted(
+    const uint8_t *row,
+    const float   *weights,
+    float          bias,
+    int            dim,
+    int            n_groups,
+    int            full_groups)
+{
+    if (full_groups) {
+        return score_row_3bit_weighted_fullgroups(row, weights, n_groups) + bias;
+    }
+    float total = bias;
+    int bit_offset = 0;
+    for (int d = 0; d < dim; d++) {
+        int byte_idx = bit_offset >> 3;
+        int shift = bit_offset & 7;
+        uint32_t chunk = (uint32_t)row[byte_idx] >> shift;
+        if (shift + 3 > 8) {
+            chunk |= (uint32_t)row[byte_idx + 1] << (8 - shift);
+        }
+        total += weights[d] * (float)(chunk & 7);
+        bit_offset += 3;
+    }
+    return total;
+}
+
 static int score_3bit_weighted_topk_range(
     const uint8_t *packed_db,
     const float   *weights,
@@ -1387,27 +1418,7 @@ static int score_3bit_weighted_topk_range(
 
     for (int v = start; v < end; v++) {
         const uint8_t *row = packed_db + (size_t)v * bytes_per_vec;
-        float total;
-
-        if (full_groups) {
-            total = score_row_3bit_weighted_fullgroups(row, weights, n_groups) + bias;
-        } else {
-            /* General path for dim not divisible by 8 */
-            total = bias;
-            const float *w = weights;
-            int bit_offset = 0;
-            for (int d = 0; d < dim; d++) {
-                int byte_idx = bit_offset >> 3;
-                int shift = bit_offset & 7;
-                uint32_t chunk = (uint32_t)row[byte_idx] >> shift;
-                if (shift + 3 > 8) {
-                    chunk |= (uint32_t)row[byte_idx + 1] << (8 - shift);
-                }
-                int level = chunk & 7;
-                total += w[d] * (float)level;
-                bit_offset += 3;
-            }
-        }
+        float total = score_row_3bit_weighted(row, weights, bias, dim, n_groups, full_groups);
 
         if (found < k) {
             indices_out[found] = v;
@@ -1440,14 +1451,80 @@ static int score_3bit_weighted_topk_range(
     return found;
 }
 
-static void *score_3bit_weighted_topk_worker(void *arg)
+/* Work-stealing scorer: threads pull fixed-size chunks from a shared atomic
+ * cursor instead of each owning an equal contiguous slice. On heterogeneous
+ * CPUs (e.g. Apple Silicon's performance + efficiency cores) the fast cores
+ * grab proportionally more chunks, so query latency is bounded by aggregate
+ * throughput rather than by the slowest core's equal share.
+ *
+ * The merged top-k SET is exact regardless of how chunks are distributed (a
+ * global top-k element is necessarily in the local top-k of whichever thread
+ * scored it). Order among exactly-equal scores is unspecified across runs,
+ * which is immaterial for float32 scores. */
+typedef struct {
+    const uint8_t *packed_db;
+    const float   *weights;
+    float          bias;
+    int            n_vectors;
+    int            dim;
+    int            bytes_per_vec;
+    int            k;
+    int            chunk_size;
+    int           *next_chunk;   /* shared atomic cursor (next vector index) */
+    int32_t       *indices_out;  /* per-thread top-k (k entries) */
+    float         *scores_out;   /* per-thread top-k (k entries) */
+    int            found;
+} ws_weighted_ctx_t;
+
+static void *score_3bit_weighted_ws_worker(void *arg)
 {
-    topk_weighted_ctx_t *ctx = (topk_weighted_ctx_t *)arg;
-    ctx->found = score_3bit_weighted_topk_range(
-        ctx->packed_db, ctx->weights, ctx->bias,
-        ctx->indices_out, ctx->scores_out,
-        ctx->start, ctx->end, ctx->dim, ctx->bytes_per_vec, ctx->k
-    );
+    ws_weighted_ctx_t *c = (ws_weighted_ctx_t *)arg;
+    const int n = c->n_vectors, k = c->k, dim = c->dim;
+    const int n_groups = dim / 8;
+    const int full_groups = (dim & 7) == 0;
+    int32_t *idx = c->indices_out;
+    float   *sc = c->scores_out;
+    int found = 0;
+    float min_score = 0.0f;
+    int min_pos = 0;
+
+    for (;;) {
+        int start = __atomic_fetch_add(c->next_chunk, c->chunk_size, __ATOMIC_RELAXED);
+        if (start >= n) break;
+        int end = start + c->chunk_size;
+        if (end > n) end = n;
+
+        for (int v = start; v < end; v++) {
+            const uint8_t *row = c->packed_db + (size_t)v * c->bytes_per_vec;
+            float total = score_row_3bit_weighted(row, c->weights, c->bias, dim, n_groups, full_groups);
+
+            if (found < k) {
+                idx[found] = v;
+                sc[found] = total;
+                if (found == 0 || total < min_score) {
+                    min_score = total;
+                    min_pos = found;
+                }
+                found++;
+                continue;
+            }
+            if (total <= min_score) {
+                continue;
+            }
+            idx[min_pos] = v;
+            sc[min_pos] = total;
+            min_pos = 0;
+            min_score = sc[0];
+            for (int i = 1; i < k; i++) {
+                if (sc[i] < min_score) {
+                    min_score = sc[i];
+                    min_pos = i;
+                }
+            }
+        }
+    }
+
+    c->found = found;
     return NULL;
 }
 
@@ -1476,7 +1553,7 @@ int score_3bit_weighted_topk_dispatch(
 
     pthread_t *threads = (pthread_t *)malloc((size_t)num_threads * sizeof(pthread_t));
     int *thread_created = (int *)calloc((size_t)num_threads, sizeof(int));
-    topk_weighted_ctx_t *ctxs = (topk_weighted_ctx_t *)calloc((size_t)num_threads, sizeof(topk_weighted_ctx_t));
+    ws_weighted_ctx_t *ctxs = (ws_weighted_ctx_t *)calloc((size_t)num_threads, sizeof(ws_weighted_ctx_t));
     int32_t *local_indices = (int32_t *)malloc((size_t)num_threads * (size_t)k * sizeof(int32_t));
     float *local_scores = (float *)malloc((size_t)num_threads * (size_t)k * sizeof(float));
     if (!threads || !thread_created || !ctxs || !local_indices || !local_scores) {
@@ -1488,28 +1565,28 @@ int score_3bit_weighted_topk_dispatch(
         );
     }
 
-    int chunk = (n_vectors + num_threads - 1) / num_threads;
+    /* Shared atomic cursor for work-stealing. Aim for ~32 chunks per thread so
+     * fast cores can grab extra work, while keeping chunks large enough that
+     * atomic-increment overhead and the per-chunk top-k state stay negligible. */
+    int next_chunk = 0;
+    int chunk_size = n_vectors / (num_threads * 32);
+    if (chunk_size < 512) chunk_size = 512;
+
     for (int t = 0; t < num_threads; t++) {
-        int start = t * chunk;
-        int end_t = start + chunk;
-        if (start >= n_vectors) break;
-        if (end_t > n_vectors) end_t = n_vectors;
         ctxs[t].packed_db = packed_db;
         ctxs[t].weights = weights;
         ctxs[t].bias = bias;
-        ctxs[t].indices_out = local_indices + (size_t)t * k;
-        ctxs[t].scores_out = local_scores + (size_t)t * k;
-        ctxs[t].start = start;
-        ctxs[t].end = end_t;
+        ctxs[t].n_vectors = n_vectors;
         ctxs[t].dim = dim;
         ctxs[t].bytes_per_vec = bytes_per_vec;
         ctxs[t].k = k;
+        ctxs[t].chunk_size = chunk_size;
+        ctxs[t].next_chunk = &next_chunk;
+        ctxs[t].indices_out = local_indices + (size_t)t * k;
+        ctxs[t].scores_out = local_scores + (size_t)t * k;
         ctxs[t].found = 0;
-        if (pthread_create(&threads[t], NULL, score_3bit_weighted_topk_worker, &ctxs[t]) != 0) {
-            ctxs[t].found = score_3bit_weighted_topk_range(
-                packed_db, weights, bias, ctxs[t].indices_out, ctxs[t].scores_out,
-                start, end_t, dim, bytes_per_vec, k
-            );
+        if (pthread_create(&threads[t], NULL, score_3bit_weighted_ws_worker, &ctxs[t]) != 0) {
+            score_3bit_weighted_ws_worker(&ctxs[t]);
         } else {
             thread_created[t] = 1;
         }

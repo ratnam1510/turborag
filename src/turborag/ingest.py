@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -163,7 +164,11 @@ def build_sidecar_index(
 def write_records_snapshot(records: Iterable[ChunkRecord], path: str | Path) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
+    # Write to a temp file in the same directory, fsync, then atomically rename
+    # into place so a crash or concurrent reader never sees a half-written
+    # snapshot.
+    tmp = target.with_name(target.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
         for record in records:
             payload = {
                 "chunk_id": record.chunk_id,
@@ -174,6 +179,9 @@ def write_records_snapshot(records: Iterable[ChunkRecord], path: str | Path) -> 
                 "metadata": record.metadata,
             }
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, target)
     return target
 
 

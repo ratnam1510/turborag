@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.2 - 2026-06-05
+
+### Performance
+
+- **Work-stealing exact scanner** — the threaded 3-bit exact scorer now pulls fixed-size chunks from a shared atomic cursor instead of giving each thread an equal contiguous slice. On heterogeneous CPUs (e.g. Apple Silicon performance + efficiency cores) fast cores grab proportionally more work, so query latency tracks aggregate throughput instead of the slowest core's share. ~1.9× single-query throughput at the default 8 threads on a 100K/384-dim fixture, with much better scaling past 4 threads. The merged top-k set remains exact.
+- **SIMD reduction kernels** — the C scorer now compiles with CPU tuning (`-mcpu=native` on arm64, `-march=native` on x86) plus safe floating-point reassociation (`-fassociative-math -ffp-contract=fast`, never `-ffast-math`/`-ffinite-math-only`), letting the dot-product reductions use parallel SIMD accumulators. ~4–4.7× batch exact throughput. Reassociation is rank-preserving (verified: top-k identical to the strict-order build). A fallback flag ladder degrades gracefully if a host compiler rejects a flag.
+
+### Bug Fixes
+
+- **HTTP service concurrency** — searches and mutations now coordinate through a writer-preferring readers-writer lock, fixing a reader-vs-writer race where a query could observe a half-applied ingest. Metrics counters are now thread-safe.
+- **Atomic persistence** — `TurboIndex.save()` writes to a staging directory and atomically swaps it into place (re-opening memmaps when saving in place), so a crash mid-save can no longer leave a partial index. The records snapshot is written via temp-file + fsync + atomic rename.
+- **Corruption detection** — index load and shard append now validate file sizes against the expected shape and raise `IndexConfigError` instead of silently reading past a truncated shard.
+- **Single-worker writes** — `turborag serve --workers > 1` now clamps to a single worker with a clear warning; the in-memory index cannot be shared across processes and concurrent snapshot writes would race.
+
+### Internal
+
+- Input limits (`MAX_BATCH_QUERIES`, `MAX_INGEST_RECORDS`) and query-vector dimension validation reject oversized or malformed payloads up front.
+- Removed redundant array copies during `delete()`, halving transient memory for that path.
+
 ## 0.5.1 - 2026-04-28
 
 ### New Features

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from .compress import (
     normalize_rows,
     quantize_qjl,
 )
-from .exceptions import DuplicateIDError, IDNotFoundError
+from .exceptions import DuplicateIDError, IDNotFoundError, IndexConfigError
 from .fast_kernels import build_query_lut, build_query_lut_f32, build_query_weights_f32, score_shard_lut, topk_shard_lut
 from .filters import match_mask, validate_filters
 
@@ -535,11 +536,16 @@ class TurboIndex:
 
     def save(self, path: str) -> None:
         index_dir = Path(path)
-        index_dir.mkdir(parents=True, exist_ok=True)
-        shards_dir = index_dir / "shards"
-        if shards_dir.exists():
-            shutil.rmtree(shards_dir)
-        shards_dir.mkdir(parents=True, exist_ok=True)
+        index_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write the full index into a sibling staging directory first, then swap
+        # it into place atomically. A crash mid-write leaves the existing index
+        # untouched, and concurrent readers never observe a partial state.
+        staging = index_dir.parent / (index_dir.name + ".saving")
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging_shards = staging / "shards"
+        staging_shards.mkdir(parents=True, exist_ok=True)
 
         config = {
             "dim": self.dim,
@@ -551,20 +557,39 @@ class TurboIndex:
             "schema_version": 1,
             "size": self._size,
         }
-        (index_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-        np.save(index_dir / "rotation.npy", self.rotation)
+        (staging / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+        np.save(staging / "rotation.npy", self.rotation)
 
         for shard_index, shard in enumerate(self._shards):
-            shard_path = shards_dir / f"shard_{shard_index:03d}.bin"
-            ids_path = shards_dir / f"shard_{shard_index:03d}.ids.json"
+            shard_path = staging_shards / f"shard_{shard_index:03d}.bin"
+            ids_path = staging_shards / f"shard_{shard_index:03d}.ids.json"
             np.asarray(shard.vectors, dtype=np.uint8).tofile(shard_path)
             ids_path.write_text(json.dumps(shard.ids, indent=2), encoding="utf-8")
             if shard.sketches is not None:
-                sketch_path = shards_dir / f"shard_{shard_index:03d}.sketch.bin"
+                sketch_path = staging_shards / f"shard_{shard_index:03d}.sketch.bin"
                 np.asarray(shard.sketches, dtype=np.uint8).tofile(sketch_path)
             if shard.metadata is not None:
-                meta_path = shards_dir / f"shard_{shard_index:03d}.meta.json"
+                meta_path = staging_shards / f"shard_{shard_index:03d}.meta.json"
                 meta_path.write_text(json.dumps(shard.metadata), encoding="utf-8")
+
+        # Atomic swap: park the old directory aside, move staging into place,
+        # then delete the old copy. os.rename is atomic on POSIX.
+        saving_in_place = (
+            self.storage_dir is not None and Path(self.storage_dir) == index_dir
+        )
+        backup = index_dir.parent / (index_dir.name + ".bak")
+        if backup.exists():
+            shutil.rmtree(backup)
+        if index_dir.exists():
+            os.rename(index_dir, backup)
+        os.rename(staging, index_dir)
+        if backup.exists():
+            shutil.rmtree(backup)
+
+        # If we just rewrote our own backing store, the live memmaps now point
+        # at the deleted backup files. Re-open memmaps against the new files.
+        if saving_in_place:
+            self.load(str(index_dir))
 
     def load(self, path: str) -> None:
         index_dir = Path(path)
@@ -591,11 +616,25 @@ class TurboIndex:
             shard_path = shards_dir / f"{shard_stem}.bin"
             ids = json.loads(ids_path.read_text(encoding="utf-8"))
             shape = (len(ids), self._bytes_per_vector)
+            expected_bytes = shape[0] * shape[1]
+            actual_bytes = shard_path.stat().st_size
+            if actual_bytes != expected_bytes:
+                raise IndexConfigError(
+                    f"shard {shard_path.name} is {actual_bytes} bytes, expected {expected_bytes} "
+                    f"({shape[0]} vectors x {shape[1]} bytes); index is truncated or corrupt"
+                )
             vectors = np.memmap(shard_path, dtype=np.uint8, mode="r", shape=shape)
             sketch_path = shards_dir / f"{shard_stem}.sketch.bin"
             shard_sketches = None
             if sketch_path.exists():
                 sketch_shape = (len(ids), self._sketch_bytes)
+                expected_sketch = sketch_shape[0] * sketch_shape[1]
+                actual_sketch = sketch_path.stat().st_size
+                if actual_sketch != expected_sketch:
+                    raise IndexConfigError(
+                        f"sketch {sketch_path.name} is {actual_sketch} bytes, expected {expected_sketch}; "
+                        f"index is truncated or corrupt"
+                    )
                 shard_sketches = np.memmap(sketch_path, dtype=np.uint8, mode="r", shape=sketch_shape)
             meta_path = shards_dir / f"{shard_stem}.meta.json"
             shard_metadata = None
@@ -658,10 +697,17 @@ class TurboIndex:
                 new_shards.append(shard)  # no deletions in this shard
             else:
                 new_ids = [shard.ids[i] for i in keep_mask]
+                # Advanced (fancy) indexing already returns an independent
+                # in-memory array, so no extra .copy() is needed here. Dropping
+                # the redundant copies halves transient memory during delete.
                 new_vectors = np.asarray(shard.vectors, dtype=np.uint8)[keep_mask]
-                new_sketches = np.asarray(shard.sketches, dtype=np.uint8)[keep_mask].copy() if shard.sketches is not None else None
+                new_sketches = (
+                    np.asarray(shard.sketches, dtype=np.uint8)[keep_mask]
+                    if shard.sketches is not None
+                    else None
+                )
                 new_metadata = [shard.metadata[i] for i in keep_mask] if shard.metadata is not None else None
-                new_shards.append(_Shard(ids=new_ids, vectors=new_vectors.copy(), sketches=new_sketches, metadata=new_metadata))
+                new_shards.append(_Shard(ids=new_ids, vectors=new_vectors, sketches=new_sketches, metadata=new_metadata))
 
         self._shards = new_shards
         self._ids -= to_delete
@@ -715,6 +761,11 @@ class TurboIndex:
         packed_vectors = np.asarray(packed_vectors, dtype=np.uint8)
         packed_vectors.tofile(shard_path)
         ids_path.write_text(json.dumps(ids, indent=2), encoding="utf-8")
+        written = shard_path.stat().st_size
+        if written != packed_vectors.nbytes:
+            raise IndexConfigError(
+                f"shard write truncated: {written} bytes written, expected {packed_vectors.nbytes}"
+            )
         memmap = np.memmap(shard_path, dtype=np.uint8, mode="r", shape=packed_vectors.shape)
 
         shard_sketches = None
@@ -722,6 +773,11 @@ class TurboIndex:
             sketch_path = self.storage_dir / "shards" / f"shard_{shard_index:03d}.sketch.bin"
             sketches_arr = np.asarray(sketches, dtype=np.uint8)
             sketches_arr.tofile(sketch_path)
+            written_sketch = sketch_path.stat().st_size
+            if written_sketch != sketches_arr.nbytes:
+                raise IndexConfigError(
+                    f"sketch write truncated: {written_sketch} bytes written, expected {sketches_arr.nbytes}"
+                )
             shard_sketches = np.memmap(sketch_path, dtype=np.uint8, mode="r", shape=sketches_arr.shape)
 
         if metadata is not None:

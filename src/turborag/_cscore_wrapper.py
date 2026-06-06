@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,48 @@ def _resolve_exact_threads(num_threads: int | None) -> int:
     return max(1, min(cpu_count, 8))
 
 
+def _arch_tuning_flag() -> str:
+    """Pick the compiler's CPU-tuning flag for this host.
+
+    On AArch64 (Apple Silicon, ARM servers) the correct knob is
+    ``-mcpu=native``; ``-march=native`` is the x86 idiom. Both GCC and Clang
+    accept these for their respective architectures.
+    """
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "-mcpu=native"
+    return "-march=native"
+
+
+# Floating-point reassociation flags. These let the compiler use multiple
+# parallel SIMD accumulators for the dot-product reductions in the scorer
+# (NEON on ARM, SSE/AVX on x86) instead of a single serial chain — a large
+# win for the batch weighted scorer in particular. We deliberately avoid
+# ``-ffast-math`` / ``-Ofast`` because those imply ``-ffinite-math-only``
+# (assume no NaN/Inf); reassociation alone is enough and only changes the
+# *order* of summation, which is rank-preserving for the scorer (verified:
+# top-k output is identical to the strict-order build).
+_REASSOC_FLAGS = [
+    "-ffp-contract=fast",
+    "-fassociative-math",
+    "-fno-signed-zeros",
+    "-fno-trapping-math",
+    "-fno-math-errno",
+]
+
+
+def _flag_candidates() -> list[list[str]]:
+    """Optimization-flag sets to try, best first; later sets are fallbacks
+    in case a host's compiler rejects a flag (e.g. no ``-mcpu=native``)."""
+    arch = _arch_tuning_flag()
+    return [
+        ["-O3", arch, "-funroll-loops", *_REASSOC_FLAGS],
+        ["-O3", arch, "-funroll-loops"],
+        ["-O3", "-funroll-loops"],
+        ["-O2"],
+    ]
+
+
 def _find_or_compile() -> ctypes.CDLL | None:
     """Find pre-compiled library or compile from source."""
     src_dir = Path(__file__).parent
@@ -63,32 +106,35 @@ def _find_or_compile() -> ctypes.CDLL | None:
         except OSError:
             pass
 
-    # Compile
-    try:
-        logger.info("Compiling C scoring kernel: %s", c_source)
-        cmd = [
-            "gcc", "-O3", "-march=native", "-funroll-loops",
-            "-shared", "-fPIC",
-            "-o", str(lib_path),
-            str(c_source),
-        ]
-        if sys.platform != "win32":
-            cmd.insert(1, "-pthread")
-        if sys.platform == "darwin":
-            cmd.insert(2, "-undefined")
-            cmd.insert(3, "dynamic_lookup")
+    # Compile, trying progressively more conservative flag sets so that an
+    # unsupported flag degrades performance instead of losing the C kernel.
+    base: list[str] = ["gcc", "-shared", "-fPIC", "-o", str(lib_path), str(c_source)]
+    if sys.platform != "win32":
+        base.insert(1, "-pthread")
+    if sys.platform == "darwin":
+        base.insert(2, "-undefined")
+        base.insert(3, "dynamic_lookup")
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            logger.warning("C kernel compilation failed: %s", result.stderr)
+    last_err = ""
+    for opt_flags in _flag_candidates():
+        cmd = base[:1] + opt_flags + base[1:]
+        try:
+            logger.info("Compiling C scoring kernel: %s (%s)", c_source, " ".join(opt_flags))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("Cannot compile C kernel (gcc not found?): %s", exc)
             return None
+        if result.returncode != 0:
+            last_err = result.stderr
+            logger.info("Flag set %s rejected, trying fallback", opt_flags)
+            continue
+        try:
+            return ctypes.CDLL(str(lib_path))
+        except OSError as exc:
+            last_err = str(exc)
 
-        return ctypes.CDLL(str(lib_path))
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("Cannot compile C kernel (gcc not found?): %s", exc)
-        return None
+    logger.warning("C kernel compilation failed: %s", last_err)
+    return None
 
 
 def _get_lib() -> ctypes.CDLL | None:

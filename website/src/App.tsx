@@ -350,7 +350,7 @@ function Features() {
     {
       title: 'Production Ready',
       description: 'Atomic persistence, thread-safe HTTP service, request tracking, latency metrics, CORS, and comprehensive test coverage.',
-      detail: '104+ tests'
+      detail: '190+ tests'
     }
   ]
 
@@ -1591,15 +1591,18 @@ The implementation is built from:
 - Core package scaffolding and packaging
 - Deterministic rotation generation
 - Bit-packed scalar quantization and LUT-based scoring
-- **C scoring kernel** with fused byte-triplet acceleration
+- **C scoring kernel** with weighted integer scorer and fused byte-triplet acceleration
+- **Work-stealing exact scanner** — threads pull chunks from a shared atomic cursor, scaling on heterogeneous CPUs (e.g. Apple Silicon P+E cores)
+- **SIMD reduction kernels** — CPU-tuned build with safe FP reassociation (parallel accumulators), rank-preserving
 - \`TurboIndex\` with memmap-backed persistence, batch search, delete, update
+- **Atomic persistence** — staged save with atomic directory swap; temp-file + fsync + rename for the records snapshot; truncated-shard detection on load
 - \`GraphBuilder\` with Leiden community detection and graph persistence
 - \`HybridRetriever\` for dense + graph retrieval
 - **Token-aware document chunking** for PDF, markdown, and plain text
-- **Production HTTP service** with CORS, metrics, batch queries
+- **Production HTTP service** with CORS, metrics, batch queries, and concurrency-safe mutations (readers-writer lock)
 - **MCP server** with query, describe, and ingest tools
 - **Dockerfile** for production deployment
-- **104+ tests**
+- **190+ tests**
 
 ## Performance Summary
 
@@ -1619,7 +1622,7 @@ The implementation is built from:
 | Exact float32 | 1.000 | 64 |
 | FAISS HNSW | 0.575 | 1,737 |
 
-TurboRAG achieves perfect recall at both scales with 8x memory compression.`
+TurboRAG achieves perfect recall at both scales with 8x memory compression. The published large-scale figures use the documented 100K reproducible rerun; 0.5.2 further improves throughput on multi-core hosts via the work-stealing scanner and SIMD reassociation (top-k output unchanged).`
   },
   'llm-request-model': {
     title: 'LLM Request Model',

@@ -462,7 +462,33 @@ def test_serve_workers_option(monkeypatch, tmp_path):
         ["serve", "--index", str(tmp_path / "index"), "--workers", "4"],
     )
     assert result.exit_code == 0, result.output
-    assert captured.get("workers") == 4
+    # The in-memory index cannot be shared across worker processes, so
+    # --workers > 1 is clamped to a single worker with a warning. (uvicorn
+    # silently ignores workers>1 when given an app instance anyway.)
+    assert captured.get("workers") == 1
+    assert "not supported" in result.output
+
+
+def test_serve_workers_single_is_unchanged(monkeypatch, tmp_path):
+    _build_index(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, **kwargs):
+        captured.update(kwargs)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["serve", "--index", str(tmp_path / "index"), "--workers", "1"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured.get("workers") == 1
+    assert "not supported" not in result.output
 
 
 def test_serve_supports_memory_flags(monkeypatch, tmp_path):
@@ -594,3 +620,96 @@ def test_serve_uses_adapter_config_when_env_is_set(monkeypatch, tmp_path):
     response = client.post("/query", json={"query_vector": [2.0, 0.0, 1.0], "top_k": 1})
     assert response.status_code == 200
     assert response.json()["results"][0]["chunk_id"] == "a"
+
+
+# ---------------------------------------------------------------------------
+#  Hardening regression tests (input limits, validation, concurrency)
+# ---------------------------------------------------------------------------
+
+
+def test_query_rejects_vector_dim_mismatch(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+    resp = client.post("/query", json={"query_vector": [1.0, 2.0], "top_k": 1})
+    assert resp.status_code == 400
+    assert "index dim" in resp.json()["detail"]
+
+
+def test_batch_query_rejects_too_many_queries(tmp_path):
+    from turborag.service import MAX_BATCH_QUERIES
+
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+    queries = [{"query_vector": [1.0, 0.0, 0.0]} for _ in range(MAX_BATCH_QUERIES + 1)]
+    resp = client.post("/query/batch", json={"queries": queries, "hydrate": False})
+    assert resp.status_code == 400
+    assert "maximum" in resp.json()["detail"]
+
+
+def test_batch_query_rejects_dim_mismatch(tmp_path):
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+    resp = client.post(
+        "/query/batch",
+        json={"queries": [{"query_vector": [1.0, 0.0]}], "hydrate": False},
+    )
+    assert resp.status_code == 400
+    assert "index dim" in resp.json()["detail"]
+
+
+def test_ingest_rejects_too_many_records(tmp_path):
+    from turborag.service import MAX_INGEST_RECORDS
+
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+    records = [
+        {"chunk_id": f"x{i}", "text": "t", "embedding": [1.0, 0.0, 0.0]}
+        for i in range(MAX_INGEST_RECORDS + 1)
+    ]
+    resp = client.post("/ingest", json={"records": records})
+    assert resp.status_code == 400
+    assert "maximum" in resp.json()["detail"]
+
+
+def test_concurrent_search_during_ingest_is_consistent(tmp_path):
+    import threading
+
+    _build_index(tmp_path)
+    client = TestClient(create_app(tmp_path / "index"))
+
+    errors: list[str] = []
+    stop = threading.Event()
+
+    def hammer_search():
+        while not stop.is_set():
+            r = client.post(
+                "/query", json={"query_vector": [2.0, 0.0, 1.0], "top_k": 2}
+            )
+            if r.status_code != 200:
+                errors.append(r.text)
+                return
+
+    readers = [threading.Thread(target=hammer_search) for _ in range(4)]
+    for t in readers:
+        t.start()
+    try:
+        for i in range(20):
+            r = client.post(
+                "/ingest",
+                json={
+                    "records": [
+                        {
+                            "chunk_id": f"new-{i}",
+                            "text": "concurrent",
+                            "embedding": [1.0, 1.0, 1.0],
+                        }
+                    ]
+                },
+            )
+            assert r.status_code == 200, r.text
+    finally:
+        stop.set()
+        for t in readers:
+            t.join()
+
+    assert not errors, errors[0]

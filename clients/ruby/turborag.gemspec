@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name        = "turborag"
-  s.version     = "0.5.1"
+  s.version     = "0.5.2"
   s.summary     = "Ruby client for the TurboRAG compressed vector retrieval API"
   s.description = "Typed wrapper over the TurboRAG HTTP API for compressed vector search. Zero dependencies beyond stdlib."
   s.authors     = ["Ratnam Shah"]

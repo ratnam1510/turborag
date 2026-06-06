@@ -1,6 +1,6 @@
 [package]
 name = "turborag"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "MIT"
 description = "Rust client for the TurboRAG compressed vector retrieval HTTP API"

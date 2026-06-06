@@ -451,6 +451,17 @@ def serve(
     except (ValueError, ImportError) as exc:
         raise click.ClickException(str(exc)) from exc
 
+    if workers and workers > 1:
+        click.echo(
+            "warning: --workers > 1 is not supported with the in-memory index. "
+            "Each worker process holds its own copy of the index, so ingest "
+            "mutations are not shared across workers and concurrent writes to "
+            "the records snapshot would race. Falling back to a single worker. "
+            "For read-only horizontal scaling, run multiple single-worker "
+            "processes behind a load balancer.",
+            err=True,
+        )
+        workers = 1
     uvicorn.run(app, host=host, port=port, workers=workers)
 
 

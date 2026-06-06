@@ -8,7 +8,7 @@ From crates.io:
 
 ```toml
 [dependencies]
-turborag = "0.5.1"
+turborag = "0.5.2"
 ```
 
 For local development against this repo:
